@@ -1,0 +1,448 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#E9EEF0">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Pace Match</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Saira+Condensed:wght@500;700&family=Public+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: map on top, odometer strip, then first trip, gear table, next-trip gear plan and shift timer. */
+:root{
+  --bg:#E9EEF0; --surface:#FFFFFF; --ink:#16232B; --muted:#5B6B73; --line:#CBD5DA;
+  --go:#1E6B4E; --go-ink:#FFFFFF; --stop:#B5481F; --stop-ink:#FFFFFF; --hi:#E7A817; --hi-ink:#16232B;
+  --display:"Saira Condensed","Arial Narrow",system-ui,sans-serif;
+  --body:"Public Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){:root{
+  --bg:#10181D; --surface:#18232A; --ink:#E6EDF0; --muted:#93A4AC; --line:#2B3A42;
+  --go:#2E8F69; --stop:#D2602F; --hi:#F0B93A; color-scheme:dark;
+}}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font:15px/1.45 var(--body);
+  padding:env(safe-area-inset-top,0px) 0 env(safe-area-inset-bottom,0px)}
+.wrap{max-width:560px;margin:0 auto;padding-block:12px 32px;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));
+  display:flex;flex-direction:column;gap:14px}
+header{display:flex;align-items:baseline;justify-content:space-between;gap:12px}
+h1{font:700 1.7rem/1 var(--display);letter-spacing:.02em;margin:0;text-transform:uppercase}
+#map{height:36vh;min-height:220px;border-radius:14px;border:1px solid var(--line);background:var(--surface)}
+.gps{font-size:.8rem;color:var(--muted);display:flex;align-items:center;gap:6px;margin-top:-6px}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--line);flex:none}
+.dot.ok{background:var(--go)} .dot.weak{background:var(--hi)} .dot.bad{background:var(--stop)}
+.odo{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.odo > div{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:8px 10px;min-width:0}
+.lbl{font-size:.68rem;font-weight:600;letter-spacing:.09em;text-transform:uppercase;color:var(--muted)}
+.val{font:700 1.9rem/1.05 var(--display);font-variant-numeric:tabular-nums}
+.val small{font:500 .85rem var(--body);color:var(--muted);margin-left:2px}
+.big{width:100%;border:0;border-radius:14px;padding:18px;font:700 1.6rem/1 var(--display);
+  letter-spacing:.08em;text-transform:uppercase;cursor:pointer;background:var(--go);color:var(--go-ink)}
+.big.stop{background:var(--stop);color:var(--stop-ink)}
+.big:disabled{opacity:.45;cursor:not-allowed}
+button:focus-visible,input:focus-visible{outline:3px solid var(--hi);outline-offset:2px}
+section{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:16px;display:flex;flex-direction:column;gap:12px}
+h2{font:700 1.15rem/1 var(--display);letter-spacing:.06em;text-transform:uppercase;margin:0}
+.row{display:flex;gap:16px;flex-wrap:wrap}
+.row > div{min-width:0}
+.note{font-size:.82rem;color:var(--muted);margin:0}
+.field{display:flex;flex-direction:column;gap:4px;flex:1;min-width:120px}
+input{font:600 1.1rem var(--body);padding:10px 12px;border-radius:10px;border:1px solid var(--line);
+  background:var(--bg);color:var(--ink);width:100%}
+.link{background:none;border:0;color:var(--muted);text-decoration:underline;font:500 .82rem var(--body);cursor:pointer;padding:0;align-self:flex-start}
+details summary{cursor:pointer;font-size:.85rem;color:var(--muted)}
+details[open]{display:flex;flex-direction:column;gap:10px}
+.smallbtn{border:1px solid var(--line);background:var(--bg);color:var(--ink);border-radius:10px;padding:10px 14px;font:600 .9rem var(--body);cursor:pointer}
+
+/* gear table */
+.gears{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.gear{display:flex;align-items:center;gap:6px;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:4px 6px 4px 10px;min-width:0}
+.gear b{font:700 1.2rem var(--display);min-width:1.6em;color:var(--muted)}
+.gear.set b{color:var(--go)}
+.gear input{border:0;background:transparent;padding:6px 2px;font-size:1rem;min-width:0;text-align:right}
+.gear span{font-size:.72rem;color:var(--muted)}
+.saved{font-size:.78rem;color:var(--go);font-weight:600;min-height:1.1em}
+
+/* plan */
+.need{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;border-top:2px dashed var(--line);padding-top:12px}
+.need .val{font-size:2.4rem}
+.steps{display:flex;flex-direction:column;gap:8px;margin:0;padding:0;list-style:none}
+.step{display:grid;grid-template-columns:auto 1fr auto;gap:12px;align-items:center;border:1px solid var(--line);border-radius:12px;padding:10px 12px;background:var(--bg)}
+.step .gno{font:700 2.2rem/1 var(--display);color:var(--go);min-width:1.6em;text-align:center}
+.step .what{min-width:0}
+.step .what strong{display:block;font-size:1rem}
+.step .what span{font-size:.82rem;color:var(--muted)}
+.step .dur{font:700 1.8rem/1 var(--display);font-variant-numeric:tabular-nums;text-align:right}
+.warn{background:color-mix(in srgb,var(--hi) 22%,var(--surface));border:1px solid var(--hi);border-radius:10px;padding:10px 12px;font-size:.88rem;margin:0}
+
+/* shift timer */
+.runner{border-radius:14px;padding:16px;background:var(--ink);color:var(--bg);display:flex;flex-direction:column;gap:6px;text-align:center}
+.runner .lbl{color:color-mix(in srgb,var(--bg) 70%,var(--ink))}
+.runner .now{font:700 3.4rem/1 var(--display)}
+.runner .count{font:700 4.2rem/1 var(--display);font-variant-numeric:tabular-nums}
+.runner.shift{background:var(--hi);color:var(--hi-ink);animation:flash .5s steps(2) 6}
+.runner.shift .lbl{color:var(--hi-ink)}
+.runner.done{background:var(--go);color:var(--go-ink)}
+.runner.done .lbl{color:var(--go-ink)}
+@keyframes flash{50%{background:var(--stop);color:var(--stop-ink)}}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Pace Match</h1>
+    <span class="lbl">Feet · mph</span>
+  </header>
+
+  <div id="map" aria-label="Map"></div>
+  <div class="gps"><span class="dot" id="gpsDot"></span><span id="gpsText">GPS starts when you press Start</span></div>
+
+  <div class="odo">
+    <div><div class="lbl">Distance</div><div class="val"><span id="dist">0</span><small>ft</small></div></div>
+    <div><div class="lbl">Time</div><div class="val" id="time">0:00</div></div>
+    <div><div class="lbl">Avg speed</div><div class="val"><span id="avg">0.0</span><small>mph</small></div></div>
+  </div>
+
+  <button class="big" id="startStop">Start</button>
+
+  <section>
+    <h2>First trip</h2>
+    <div class="row">
+      <div><div class="lbl">Distance</div><div class="val"><span id="refDist">—</span><small>ft</small></div></div>
+      <div><div class="lbl">Unload time</div><div class="val" id="refTime">—</div></div>
+      <div><div class="lbl">Avg speed</div><div class="val"><span id="refSpd">—</span><small>mph</small></div></div>
+    </div>
+    <p class="note" id="refNote">Press Start, run the first load, then press Stop. The trip is saved here.</p>
+    <details>
+      <summary>Enter a trip by hand instead</summary>
+      <div class="row">
+        <label class="field"><span class="lbl">Distance (ft)</span><input id="manDist" type="number" inputmode="decimal" min="0" step="1" placeholder="1500"></label>
+        <label class="field"><span class="lbl">Minutes</span><input id="manMin" type="number" inputmode="decimal" min="0" step="0.1" placeholder="4.5"></label>
+      </div>
+      <button class="smallbtn" id="manSave">Save as first trip</button>
+    </details>
+  </section>
+
+  <section>
+    <h2>Gear speeds at 750 PTO rpm</h2>
+    <p class="note">Enter what the speedometer reads in each gear you use. Leave the rest blank. These stay saved on this phone.</p>
+    <div class="gears" id="gears"></div>
+    <div class="saved" id="gearSaved"></div>
+  </section>
+
+  <section>
+    <h2>Next trip</h2>
+    <label class="field"><span class="lbl">Distance to cover (ft)</span>
+      <input id="nextDist" type="number" inputmode="decimal" min="0" step="1" placeholder="2400"></label>
+    <div class="need">
+      <div><div class="lbl">Average speed needed</div><div class="val"><span id="needSpd">—</span><small>mph</small></div></div>
+      <div><div class="lbl">Same time as first trip</div><div class="val" id="needTime">—</div></div>
+    </div>
+    <p class="note" id="planNote">Save a first trip, enter your gear speeds, then enter the next distance.</p>
+    <ol class="steps" id="steps"></ol>
+    <button class="big" id="runBtn" disabled>Start shift timer</button>
+    <div class="runner" id="runner" hidden>
+      <div class="lbl" id="runLbl">Drive in</div>
+      <div class="now" id="runGear">Gear —</div>
+      <div class="lbl" id="runCountLbl">Shift in</div>
+      <div class="count" id="runCount">0:00</div>
+      <div class="lbl" id="runNext"></div>
+    </div>
+  </section>
+
+  <button class="link" id="clearRef">Clear saved trip</button>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+(function(){
+  const $ = id => document.getElementById(id);
+  const store = {
+    get(k){ try{ return JSON.parse(localStorage.getItem(k)); }catch(e){ return null; } },
+    set(k,v){ try{ localStorage.setItem(k, JSON.stringify(v)); }catch(e){} },
+    del(k){ try{ localStorage.removeItem(k); }catch(e){} }
+  };
+
+  const FT_PER_M = 3.280839895;
+  const toFt = m => m * FT_PER_M;
+  const fromFt = ft => ft / FT_PER_M;
+  const fmtFt = ft => Math.round(ft).toLocaleString();
+  const mphOf = (m, secs) => (m / 1609.344) / (secs / 3600);
+  function fmtTime(s){
+    s = Math.max(0, Math.round(s));
+    const h = Math.floor(s/3600), m = Math.floor(s%3600/60), sec = s%60;
+    return h ? `${h}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}` : `${m}:${String(sec).padStart(2,'0')}`;
+  }
+  function haversine(a, b){
+    const R = 6371000, r = Math.PI/180;
+    const dLat = (b.lat-a.lat)*r, dLon = (b.lng-a.lng)*r;
+    const x = Math.sin(dLat/2)**2 + Math.cos(a.lat*r)*Math.cos(b.lat*r)*Math.sin(dLon/2)**2;
+    return 2*R*Math.asin(Math.sqrt(x));
+  }
+
+  let ref = store.get('pm_ref_ft');            // {meters, seconds, when}
+  let gearSpeeds = store.get('pm_gears') || {}; // {"1": 2.1, "2": 2.6, ...}
+  let tracking = false, watchId = null, timerId = null, wakeLock = null;
+  let startTime = 0, meters = 0, last = null, path = [];
+  let plan = null;
+
+  // ---------- map ----------
+  const dark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+  const map = L.map('map', {zoomControl:false}).setView([39.5, -98.35], 4);
+  L.tileLayer(`https://{s}.basemaps.cartocdn.com/${dark?'dark_all':'rastertiles/voyager'}/{z}/{x}/{y}{r}.png`, {
+    maxZoom: 19, subdomains: 'abcd', attribution: '&copy; OpenStreetMap contributors &copy; CARTO'
+  }).addTo(map);
+  const line = L.polyline([], {color:'#1E6B4E', weight:5, opacity:.9}).addTo(map);
+  let startMarker = null, here = null;
+
+  // ---------- first trip ----------
+  function renderLive(){
+    const secs = tracking ? (Date.now()-startTime)/1000 : (path.length && ref ? ref.seconds : 0);
+    const m = tracking || path.length ? meters : 0;
+    $('dist').textContent = fmtFt(toFt(m));
+    $('time').textContent = fmtTime(secs);
+    $('avg').textContent = secs > 0 ? mphOf(m, secs).toFixed(1) : '0.0';
+  }
+  function renderRef(){
+    if(!ref){
+      $('refDist').textContent = '—'; $('refTime').textContent = '—'; $('refSpd').textContent = '—';
+      $('refNote').textContent = 'Press Start, run the first load, then press Stop. The trip is saved here.';
+    } else {
+      $('refDist').textContent = fmtFt(toFt(ref.meters));
+      $('refTime').textContent = fmtTime(ref.seconds);
+      $('refSpd').textContent = mphOf(ref.meters, ref.seconds).toFixed(1);
+      $('refNote').textContent = ref.when ? 'Saved ' + new Date(ref.when).toLocaleString() : 'Saved';
+    }
+    renderPlan();
+  }
+
+  // ---------- gears ----------
+  function buildGears(){
+    const box = $('gears');
+    for(let g = 1; g <= 15; g++){
+      const v = gearSpeeds[g];
+      const wrap = document.createElement('label');
+      wrap.className = 'gear' + (v ? ' set' : '');
+      wrap.innerHTML = `<b>${g}</b><input id="gear${g}" type="number" inputmode="decimal" min="0" step="0.1" aria-label="Gear ${g} speed in mph" value="${v || ''}"><span>mph</span>`;
+      box.appendChild(wrap);
+      const inp = wrap.querySelector('input');
+      inp.addEventListener('input', () => {
+        const n = parseFloat(inp.value);
+        if(n > 0) gearSpeeds[g] = n; else delete gearSpeeds[g];
+        wrap.classList.toggle('set', n > 0);
+        store.set('pm_gears', gearSpeeds);
+        $('gearSaved').textContent = 'Saved';
+        clearTimeout(buildGears.t); buildGears.t = setTimeout(()=>$('gearSaved').textContent='', 1500);
+        renderPlan();
+      });
+    }
+  }
+  const gearList = () => Object.entries(gearSpeeds)
+    .map(([g, v]) => ({g: +g, v: +v})).filter(x => x.v > 0).sort((a,b) => a.v - b.v || a.g - b.g);
+
+  // Work out how long to run in each gear so the whole distance takes exactly the first trip's time.
+  function makePlan(distFt, T){
+    const D = distFt / 5280;                 // miles
+    const need = D / (T / 3600);             // mph
+    const gears = gearList();
+    if(!gears.length) return {need, steps:[], msg:'Enter speeds for the gears you use to get a gear plan.'};
+    const legFor = (gear, secs) => ({g:gear.g, v:gear.v, secs, ft: gear.v * 5280 * secs / 3600});
+    const exact = gears.find(x => Math.abs(x.v - need) < 0.05);
+    if(exact) return {need, steps:[legFor(exact, T)]};
+    const fastest = gears[gears.length-1], slowest = gears[0];
+    if(need > fastest.v){
+      const secs = D / fastest.v * 3600;
+      return {need, steps:[legFor(fastest, secs)], warn:`You need ${need.toFixed(1)} mph, faster than your fastest saved gear. In gear ${fastest.g} the load will be empty about ${fmtTime(secs - T)} before you reach the end. Add a faster gear speed above.`};
+    }
+    if(need < slowest.v){
+      const secs = D / slowest.v * 3600;
+      return {need, steps:[legFor(slowest, secs)], warn:`You need ${need.toFixed(1)} mph, slower than your slowest saved gear. In gear ${slowest.g} you'll reach the end about ${fmtTime(T - secs)} before the load is empty. Add a slower gear speed above.`};
+    }
+    // Bracket the needed speed with the two closest gears: run the faster one first, then downshift.
+    let lo = slowest, hi = fastest;
+    for(const x of gears){ if(x.v <= need) lo = x; }
+    for(let i = gears.length-1; i >= 0; i--){ if(gears[i].v >= need) hi = gears[i]; }
+    const tHi = (D - lo.v * (T/3600)) / (hi.v - lo.v) * 3600;   // seconds in faster gear
+    const tLo = T - tHi;
+    return {need, steps:[legFor(hi, tHi), legFor(lo, tLo)]};
+  }
+
+  function renderPlan(){
+    const d = parseFloat($('nextDist').value);
+    $('steps').innerHTML = '';
+    plan = null;
+    if(!ref){ $('needSpd').textContent='—'; $('needTime').textContent='—'; $('planNote').textContent='Save a first trip first. Its time is the time every load should take.'; updateRunBtn(); return; }
+    $('needTime').textContent = fmtTime(ref.seconds);
+    if(!(d > 0)){ $('needSpd').textContent='—'; $('planNote').textContent='Enter the distance for this load.'; updateRunBtn(); return; }
+    const p = makePlan(d, ref.seconds);
+    $('needSpd').textContent = p.need.toFixed(2);
+    if(p.msg){ $('planNote').textContent = p.msg; updateRunBtn(); return; }
+    plan = p;
+    const total = p.steps.reduce((a,s)=>a+s.ft,0);
+    $('planNote').textContent = p.steps.length === 2
+      ? `Run gear ${p.steps[0].g} first, then downshift to gear ${p.steps[1].g}. Times add up to ${fmtTime(ref.seconds)}.`
+      : `One gear covers it. Total ${fmtFt(total)} ft.`;
+    p.steps.forEach((s, i) => {
+      const li = document.createElement('li');
+      li.className = 'step';
+      const share = Math.round(s.ft / total * 100);
+      li.innerHTML = `<div class="gno">${s.g}</div>
+        <div class="what"><strong>${i===0 && p.steps.length===2 ? 'First' : p.steps.length===2 ? 'Then' : 'Whole trip'} · gear ${s.g} at ${s.v} mph</strong>
+        <span>${fmtFt(s.ft)} ft · about ${share}% of the distance</span></div>
+        <div class="dur">${fmtTime(s.secs)}</div>`;
+      $('steps').appendChild(li);
+    });
+    if(p.warn){
+      const w = document.createElement('p'); w.className='warn'; w.textContent = p.warn; $('steps').appendChild(w);
+    }
+    updateRunBtn();
+  }
+
+  // ---------- shift timer ----------
+  let run = null, runTick = null, audio = null;
+  function updateRunBtn(){ if(!run){ $('runBtn').disabled = !plan; } }
+  function beep(times){
+    try{
+      audio = audio || new (window.AudioContext || window.webkitAudioContext)();
+      for(let i=0;i<times;i++){
+        const o = audio.createOscillator(), g = audio.createGain();
+        o.frequency.value = 1100; o.connect(g); g.connect(audio.destination);
+        const t = audio.currentTime + i*0.35;
+        g.gain.setValueAtTime(0.0001,t); g.gain.exponentialRampToValueAtTime(0.6,t+0.02); g.gain.exponentialRampToValueAtTime(0.0001,t+0.28);
+        o.start(t); o.stop(t+0.3);
+      }
+    }catch(e){}
+    try{ navigator.vibrate && navigator.vibrate([400,150,400,150,400]); }catch(e){}
+  }
+  function startRun(){
+    if(!plan) return;
+    try{ audio = audio || new (window.AudioContext || window.webkitAudioContext)(); audio.resume(); }catch(e){}
+    run = {steps: plan.steps, t0: Date.now(), phase: 0};
+    $('runner').hidden = false; $('runner').className = 'runner';
+    $('runBtn').textContent = 'Stop shift timer'; $('runBtn').classList.add('stop'); $('runBtn').disabled = false;
+    keepAwake();
+    tickRun(); runTick = setInterval(tickRun, 250);
+  }
+  function stopRun(){
+    clearInterval(runTick); run = null;
+    $('runner').hidden = true;
+    $('runBtn').textContent = 'Start shift timer'; $('runBtn').classList.remove('stop');
+    if(!tracking) releaseWake();
+    updateRunBtn();
+  }
+  function tickRun(){
+    const el = (Date.now() - run.t0) / 1000;
+    const s = run.steps;
+    const shiftAt = s[0].secs, endAt = s.reduce((a,x)=>a+x.secs,0);
+    let phase = el < shiftAt ? 0 : el < endAt ? 1 : 2;
+    if(s.length === 1 && phase === 1) phase = 0;
+    if(phase !== run.phase){
+      if(phase === 1){ beep(3); $('runner').className = 'runner shift'; setTimeout(()=>{ if(run && run.phase===1) $('runner').className='runner'; }, 3200); }
+      if(phase === 2){ beep(2); $('runner').className = 'runner done'; }
+      run.phase = phase;
+    }
+    if(phase === 0){
+      $('runLbl').textContent = 'Drive in';
+      $('runGear').textContent = `Gear ${s[0].g} · ${s[0].v} mph`;
+      $('runCountLbl').textContent = s.length === 2 ? 'Shift in' : 'Finish in';
+      $('runCount').textContent = fmtTime((s.length === 2 ? shiftAt : endAt) - el);
+      $('runNext').textContent = s.length === 2 ? `Then gear ${s[1].g} for ${fmtTime(s[1].secs)}` : '';
+    } else if(phase === 1){
+      $('runLbl').textContent = 'Downshift to';
+      $('runGear').textContent = `Gear ${s[1].g} · ${s[1].v} mph`;
+      $('runCountLbl').textContent = 'Finish in';
+      $('runCount').textContent = fmtTime(endAt - el);
+      $('runNext').textContent = '';
+    } else {
+      $('runLbl').textContent = 'Done';
+      $('runGear').textContent = 'End of run';
+      $('runCountLbl').textContent = 'Total time';
+      $('runCount').textContent = fmtTime(endAt);
+      $('runNext').textContent = '';
+    }
+  }
+  $('runBtn').addEventListener('click', () => run ? stopRun() : startRun());
+
+  // ---------- GPS ----------
+  function setGps(state, text){ $('gpsDot').className = 'dot ' + state; $('gpsText').textContent = text; }
+  function onPos(p){
+    const {latitude:lat, longitude:lng, accuracy} = p.coords;
+    const pt = {lat, lng};
+    if(!here){ here = L.circleMarker(pt, {radius:7, color:'#fff', weight:2, fillColor:'#E7A817', fillOpacity:1}).addTo(map); }
+    here.setLatLng(pt);
+    setGps(accuracy <= 20 ? 'ok' : accuracy <= 50 ? 'weak' : 'bad', `GPS accuracy ±${Math.round(accuracy*FT_PER_M)} ft`);
+    if(!tracking || accuracy > 50) return;
+    if(!last){
+      last = pt; path.push(pt); line.setLatLngs(path);
+      startMarker = L.circleMarker(pt, {radius:6, color:'#1E6B4E', fillColor:'#1E6B4E', fillOpacity:1}).addTo(map);
+      map.setView(pt, 17); return;
+    }
+    const d = haversine(last, pt);
+    if(d < Math.max(4, accuracy*0.5)) return;
+    meters += d; last = pt; path.push(pt);
+    line.setLatLngs(path); map.panTo(pt, {animate:true});
+  }
+  function onErr(e){
+    setGps('bad', e.code === 1 ? 'Location blocked. Allow location for this page in your browser settings.'
+      : e.code === 2 ? 'Location unavailable. Try going outside.' : 'Waiting for GPS…');
+  }
+  async function keepAwake(){ try{ if('wakeLock' in navigator && !wakeLock) wakeLock = await navigator.wakeLock.request('screen'); }catch(e){} }
+  function releaseWake(){ try{ wakeLock && wakeLock.release(); }catch(e){} wakeLock = null; }
+  document.addEventListener('visibilitychange', () => { if((tracking || run) && document.visibilityState==='visible'){ wakeLock = null; keepAwake(); } });
+
+  function start(){
+    if(!('geolocation' in navigator)){ setGps('bad','This browser has no GPS access.'); return; }
+    tracking = true; meters = 0; last = null; path = []; line.setLatLngs([]);
+    if(startMarker){ map.removeLayer(startMarker); startMarker = null; }
+    startTime = Date.now();
+    setGps('weak','Finding your location…');
+    watchId = navigator.geolocation.watchPosition(onPos, onErr, {enableHighAccuracy:true, maximumAge:0, timeout:15000});
+    timerId = setInterval(renderLive, 1000);
+    keepAwake();
+    $('startStop').textContent = 'Stop'; $('startStop').classList.add('stop');
+    renderLive();
+  }
+  function stop(){
+    tracking = false;
+    if(watchId !== null) navigator.geolocation.clearWatch(watchId);
+    watchId = null; clearInterval(timerId);
+    if(!run) releaseWake();
+    const seconds = (Date.now()-startTime)/1000;
+    $('startStop').textContent = 'Start'; $('startStop').classList.remove('stop');
+    if(meters > 0 && seconds > 0){
+      ref = {meters, seconds, when: Date.now()};
+      store.set('pm_ref_ft', ref);
+      if(path.length > 1) map.fitBounds(line.getBounds(), {padding:[24,24]});
+    } else {
+      setGps('weak','No distance recorded. Make sure GPS has a fix before you move.');
+    }
+    renderRef(); renderLive();
+  }
+
+  // ---------- events ----------
+  $('startStop').addEventListener('click', () => tracking ? stop() : start());
+  $('nextDist').addEventListener('input', () => { if(run) stopRun(); renderPlan(); store.set('pm_next_ft', $('nextDist').value); });
+  $('manSave').addEventListener('click', () => {
+    const d = parseFloat($('manDist').value), mins = parseFloat($('manMin').value);
+    if(!(d > 0) || !(mins > 0)){ $('refNote').textContent = 'Enter both a distance and minutes above zero.'; return; }
+    ref = {meters: fromFt(d), seconds: mins*60, when: Date.now()};
+    store.set('pm_ref_ft', ref); renderRef();
+  });
+  let clearArmed = false;
+  $('clearRef').addEventListener('click', () => {
+    if(!clearArmed){ clearArmed = true; $('clearRef').textContent = 'Tap again to clear trip'; setTimeout(()=>{clearArmed=false; $('clearRef').textContent='Clear saved trip';}, 3000); return; }
+    ref = null; store.del('pm_ref_ft'); clearArmed = false; $('clearRef').textContent = 'Clear saved trip'; renderRef();
+  });
+
+  // ---------- init ----------
+  const savedNext = store.get('pm_next_ft'); if(savedNext) $('nextDist').value = savedNext;
+  buildGears(); renderRef(); renderLive();
+})();
+</script>
+</body>
+</html>
