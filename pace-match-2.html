@@ -147,6 +147,7 @@ details[open]{display:flex;flex-direction:column;gap:10px}
       <div class="gh"><span>Gear</span><span>Default</span><span>GPS</span><span>Speedo</span></div>
     </div>
     <div class="saved" id="gearSaved"></div>
+    <button class="link" id="resetDef">Reset defaults to built-in speeds</button>
     <div class="corr" id="corr" hidden>
       <p class="note" id="corrText"></p>
       <label><input type="checkbox" id="corrOn"> Correct timing for speedometer error</label>
@@ -206,7 +207,9 @@ details[open]{display:flex;flex-direction:column;gap:10px}
 
   let ref = store.get('pm_ref_ft');            // {meters, seconds, when}
   // Speeds saved by the earlier version (pm_gears) become the defaults.
-  let defaults = store.get('pm_gears') || {};   // {"1": 2.1, ...} mph
+  // Built-in gear speeds (JD 4850, 750 PTO rpm, read off the speedometer). Used on any phone that hasn't saved its own.
+  const BUILTIN = {1:1.0, 2:1.4, 3:1.7, 4:2.1, 5:2.4, 6:2.8, 7:3.3, 8:3.8, 9:4.4, 10:4.8, 11:5.6};
+  let defaults = store.get('pm_gears') || Object.assign({}, BUILTIN);   // {"1": 2.1, ...} mph
   let gpsSp = store.get('pm_gps') || {};        // GPS-measured mph per gear
   let manual = store.get('pm_manual') || {};    // speedo reading per gear
   let corrOn = store.get('pm_corr'); if(corrOn === null) corrOn = true;
@@ -311,6 +314,14 @@ details[open]{display:flex;flex-direction:column;gap:10px}
     }
     renderPlan();
   }
+  let resetArmed = false;
+  $('resetDef').addEventListener('click', () => {
+    if(!resetArmed){ resetArmed = true; $('resetDef').textContent = 'Tap again to reset defaults'; setTimeout(()=>{ resetArmed = false; $('resetDef').textContent = 'Reset defaults to built-in speeds'; }, 3000); return; }
+    resetArmed = false; $('resetDef').textContent = 'Reset defaults to built-in speeds';
+    defaults = Object.assign({}, BUILTIN); store.set('pm_gears', defaults);
+    for(let g=1; g<=15; g++) $('def'+g).value = defaults[g] || '';
+    flashSaved('Defaults reset'); refreshGears();
+  });
   $('corrOn').addEventListener('change', () => { corrOn = $('corrOn').checked; store.set('pm_corr', corrOn); refreshGears(); });
 
   // Measure ground speed in one gear: average GPS speed over about 6 seconds of steady driving.
