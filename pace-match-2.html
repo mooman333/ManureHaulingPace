@@ -23,6 +23,7 @@
   --go:#2E8F69; --stop:#D2602F; --hi:#F0B93A; color-scheme:dark;
 }}
 *{box-sizing:border-box}
+[hidden]{display:none!important}
 html,body{margin:0}
 body{background:var(--bg);color:var(--ink);font:15px/1.45 var(--body);
   padding:env(safe-area-inset-top,0px) 0 env(safe-area-inset-bottom,0px)}
@@ -58,14 +59,25 @@ details summary{cursor:pointer;font-size:.85rem;color:var(--muted)}
 details[open]{display:flex;flex-direction:column;gap:10px}
 .smallbtn{border:1px solid var(--line);background:var(--bg);color:var(--ink);border-radius:10px;padding:10px 14px;font:600 .9rem var(--body);cursor:pointer}
 
-/* gear table */
-.gears{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
-.gear{display:flex;align-items:center;gap:6px;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:4px 6px 4px 10px;min-width:0}
-.gear b{font:700 1.2rem var(--display);min-width:1.6em;color:var(--muted)}
-.gear.set b{color:var(--go)}
-.gear input{border:0;background:transparent;padding:6px 2px;font-size:1rem;min-width:0;text-align:right}
-.gear span{font-size:.72rem;color:var(--muted)}
+/* gear table: one row per gear — default | GPS reading | speedo entry */
+.gt{display:flex;flex-direction:column;gap:6px}
+.gh,.gr{display:grid;grid-template-columns:2.2em 1fr 1.25fr 1fr;gap:6px;align-items:center}
+.gh{font-size:.64rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);text-align:center}
+.gr b{font:700 1.4rem/1 var(--display);color:var(--muted);text-align:center}
+.gr.set b{color:var(--go)}
+.gr input{font-size:1rem;padding:9px 6px;text-align:center;min-width:0}
+.gr .cell{border:2px solid transparent;border-radius:12px;min-width:0;display:flex}
+.gr .cell.active{border-color:var(--go)}
+.gr .cell > *{flex:1;min-width:0}
+.gpsbtn{border:1px solid var(--line);background:var(--bg);color:var(--ink);border-radius:10px;padding:9px 4px;font:600 .95rem var(--body);cursor:pointer;display:flex;align-items:center;justify-content:center;gap:4px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.gpsbtn.has{color:var(--go)}
+.gpsbtn.busy{background:var(--hi);color:var(--hi-ink);border-color:var(--hi)}
+.gpsbtn .x{font-size:.8rem;color:var(--muted);padding:0 2px}
+.corr{display:flex;flex-direction:column;gap:6px;border-top:1px solid var(--line);padding-top:10px}
+.corr label{display:flex;align-items:center;gap:8px;font-size:.88rem}
+.corr input{width:auto}
 .saved{font-size:.78rem;color:var(--go);font-weight:600;min-height:1.1em}
+.flip{border:1px solid var(--line);background:var(--bg);color:var(--ink);border-radius:10px;padding:10px 14px;font:600 .9rem var(--body);cursor:pointer;align-self:flex-start}
 
 /* plan */
 .need{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;border-top:2px dashed var(--line);padding-top:12px}
@@ -84,7 +96,7 @@ details[open]{display:flex;flex-direction:column;gap:10px}
 .runner .lbl{color:color-mix(in srgb,var(--bg) 70%,var(--ink))}
 .runner .now{font:700 3.4rem/1 var(--display)}
 .runner .count{font:700 4.2rem/1 var(--display);font-variant-numeric:tabular-nums}
-.runner.shift{background:var(--hi);color:var(--hi-ink);animation:flash .5s steps(2) 6}
+.runner.shift{background:var(--hi);color:var(--hi-ink);animation:flash .5s steps(2) 10}
 .runner.shift .lbl{color:var(--hi-ink)}
 .runner.done{background:var(--go);color:var(--go-ink)}
 .runner.done .lbl{color:var(--go-ink)}
@@ -130,9 +142,15 @@ details[open]{display:flex;flex-direction:column;gap:10px}
 
   <section>
     <h2>Gear speeds at 750 PTO rpm</h2>
-    <p class="note">Enter what the speedometer reads in each gear you use. Leave the rest blank. These stay saved on this phone.</p>
-    <div class="gears" id="gears"></div>
+    <p class="note">Default is your saved speed. Tap GPS while driving in that gear to measure it. Speedo is what the tractor's speedometer reads, and it wins over the other two. The green box is the one in use.</p>
+    <div class="gt" id="gears">
+      <div class="gh"><span>Gear</span><span>Default</span><span>GPS</span><span>Speedo</span></div>
+    </div>
     <div class="saved" id="gearSaved"></div>
+    <div class="corr" id="corr" hidden>
+      <p class="note" id="corrText"></p>
+      <label><input type="checkbox" id="corrOn"> Correct timing for speedometer error</label>
+    </div>
   </section>
 
   <section>
@@ -145,6 +163,7 @@ details[open]{display:flex;flex-direction:column;gap:10px}
     </div>
     <p class="note" id="planNote">Save a first trip, enter your gear speeds, then enter the next distance.</p>
     <ol class="steps" id="steps"></ol>
+    <button class="flip" id="flipBtn" hidden>Start in the lower gear instead</button>
     <button class="big" id="runBtn" disabled>Start shift timer</button>
     <div class="runner" id="runner" hidden>
       <div class="lbl" id="runLbl">Drive in</div>
@@ -186,7 +205,12 @@ details[open]{display:flex;flex-direction:column;gap:10px}
   }
 
   let ref = store.get('pm_ref_ft');            // {meters, seconds, when}
-  let gearSpeeds = store.get('pm_gears') || {}; // {"1": 2.1, "2": 2.6, ...}
+  // Speeds saved by the earlier version (pm_gears) become the defaults.
+  let defaults = store.get('pm_gears') || {};   // {"1": 2.1, ...} mph
+  let gpsSp = store.get('pm_gps') || {};        // GPS-measured mph per gear
+  let manual = store.get('pm_manual') || {};    // speedo reading per gear
+  let corrOn = store.get('pm_corr'); if(corrOn === null) corrOn = true;
+  let reversed = !!store.get('pm_rev');
   let tracking = false, watchId = null, timerId = null, wakeLock = null;
   let startTime = 0, meters = 0, last = null, path = [];
   let plan = null;
@@ -222,28 +246,119 @@ details[open]{display:flex;flex-direction:column;gap:10px}
   }
 
   // ---------- gears ----------
+  // Speedo error: true (GPS) speed divided by speedo reading, median over gears that have both.
+  function speedoFactor(){
+    const r = [];
+    for(let g=1; g<=15; g++) if(gpsSp[g] > 0 && manual[g] > 0) r.push(gpsSp[g] / manual[g]);
+    if(!r.length) return null;
+    r.sort((a,b)=>a-b);
+    const m = Math.floor(r.length/2);
+    return {f: r.length % 2 ? r[m] : (r[m-1]+r[m])/2, n: r.length};
+  }
+  // shown = the speed you'll recognise; calc = best estimate of true ground speed used for timing.
+  function gearInfo(g){
+    const sf = corrOn ? speedoFactor() : null, f = sf ? sf.f : 1;
+    if(manual[g] > 0) return {shown: manual[g], src: 'speedo', calc: (corrOn && gpsSp[g] > 0) ? gpsSp[g] : manual[g] * f};
+    if(gpsSp[g] > 0)  return {shown: gpsSp[g], src: 'gps', calc: gpsSp[g]};
+    if(defaults[g] > 0) return {shown: defaults[g], src: 'default', calc: defaults[g] * f};
+    return null;
+  }
+  function flashSaved(msg){
+    $('gearSaved').textContent = msg || 'Saved';
+    clearTimeout(flashSaved.t); flashSaved.t = setTimeout(()=>$('gearSaved').textContent='', 2500);
+  }
+  const rows = {};
   function buildGears(){
     const box = $('gears');
     for(let g = 1; g <= 15; g++){
-      const v = gearSpeeds[g];
-      const wrap = document.createElement('label');
-      wrap.className = 'gear' + (v ? ' set' : '');
-      wrap.innerHTML = `<b>${g}</b><input id="gear${g}" type="number" inputmode="decimal" min="0" step="0.1" aria-label="Gear ${g} speed in mph" value="${v || ''}"><span>mph</span>`;
-      box.appendChild(wrap);
-      const inp = wrap.querySelector('input');
-      inp.addEventListener('input', () => {
-        const n = parseFloat(inp.value);
-        if(n > 0) gearSpeeds[g] = n; else delete gearSpeeds[g];
-        wrap.classList.toggle('set', n > 0);
-        store.set('pm_gears', gearSpeeds);
-        $('gearSaved').textContent = 'Saved';
-        clearTimeout(buildGears.t); buildGears.t = setTimeout(()=>$('gearSaved').textContent='', 1500);
-        renderPlan();
+      const r = document.createElement('div');
+      r.className = 'gr';
+      r.innerHTML = `<b>${g}</b>
+        <div class="cell" data-c="default"><input id="def${g}" type="number" inputmode="decimal" min="0" step="0.1" aria-label="Gear ${g} default mph" placeholder="—"></div>
+        <div class="cell" data-c="gps"><button class="gpsbtn" id="gps${g}" aria-label="Measure gear ${g} with GPS"></button></div>
+        <div class="cell" data-c="speedo"><input id="man${g}" type="number" inputmode="decimal" min="0" step="0.1" aria-label="Gear ${g} speedometer mph" placeholder="—"></div>`;
+      box.appendChild(r);
+      rows[g] = r;
+      const def = r.querySelector('#def'+g), man = r.querySelector('#man'+g), btn = r.querySelector('#gps'+g);
+      def.value = defaults[g] || ''; man.value = manual[g] || '';
+      def.addEventListener('input', () => { setVal(defaults, g, def.value); store.set('pm_gears', defaults); flashSaved(); refreshGears(); });
+      man.addEventListener('input', () => { setVal(manual, g, man.value); store.set('pm_manual', manual); flashSaved(); refreshGears(); });
+      btn.addEventListener('click', e => {
+        if(e.target.classList.contains('x')){ delete gpsSp[g]; store.set('pm_gps', gpsSp); flashSaved(`Gear ${g} GPS reading cleared`); refreshGears(); return; }
+        readGps(g);
       });
     }
   }
-  const gearList = () => Object.entries(gearSpeeds)
-    .map(([g, v]) => ({g: +g, v: +v})).filter(x => x.v > 0).sort((a,b) => a.v - b.v || a.g - b.g);
+  function setVal(obj, g, v){ const n = parseFloat(v); if(n > 0) obj[g] = Math.round(n*100)/100; else delete obj[g]; }
+  function refreshGears(){
+    for(let g = 1; g <= 15; g++){
+      const r = rows[g], info = gearInfo(g), btn = r.querySelector('.gpsbtn');
+      r.classList.toggle('set', !!info);
+      r.querySelectorAll('.cell').forEach(c => c.classList.toggle('active', !!info && c.dataset.c === info.src));
+      if(gpsRead && gpsRead.g === g) continue;
+      btn.classList.remove('busy');
+      btn.classList.toggle('has', gpsSp[g] > 0);
+      btn.innerHTML = gpsSp[g] > 0 ? `${gpsSp[g].toFixed(1)} <span class="x" role="button" aria-label="Clear">✕</span>` : '◎ GPS';
+    }
+    const sf = speedoFactor();
+    $('corr').hidden = !sf;
+    if(sf){
+      const pct = Math.abs(1/sf.f - 1) * 100;
+      $('corrText').textContent = pct < 1
+        ? `Your speedometer matches GPS within 1% (from ${sf.n} gear${sf.n>1?'s':''}).`
+        : `Your speedometer reads about ${pct.toFixed(0)}% ${sf.f < 1 ? 'high' : 'low'} compared with GPS (from ${sf.n} gear${sf.n>1?'s':''}).`;
+      $('corrOn').checked = corrOn;
+    }
+    renderPlan();
+  }
+  $('corrOn').addEventListener('change', () => { corrOn = $('corrOn').checked; store.set('pm_corr', corrOn); refreshGears(); });
+
+  // Measure ground speed in one gear: average GPS speed over about 6 seconds of steady driving.
+  let gpsRead = null;
+  function readGps(g){
+    if(gpsRead) return;
+    if(!('geolocation' in navigator)){ flashSaved('This browser has no GPS access.'); return; }
+    const btn = $('gps'+g), samples = [], pts = [];
+    const DUR = 6;
+    gpsRead = {g, t0: Date.now()};
+    btn.classList.add('busy'); btn.classList.remove('has');
+    const tick = () => { const left = Math.max(0, DUR - Math.floor((Date.now()-gpsRead.t0)/1000)); btn.textContent = `Reading ${left}s`; };
+    tick(); gpsRead.timer = setInterval(tick, 250);
+    gpsRead.watch = navigator.geolocation.watchPosition(p => {
+      const c = p.coords;
+      if(c.accuracy > 40) return;
+      if(c.speed !== null && !isNaN(c.speed)) samples.push(c.speed);
+      pts.push({lat: c.latitude, lng: c.longitude, t: p.timestamp});
+    }, err => {
+      finishGps(g, null, err.code === 1 ? 'Location blocked. Allow location for this page.' : 'No GPS signal.');
+    }, {enableHighAccuracy: true, maximumAge: 0, timeout: 15000});
+    gpsRead.end = setTimeout(() => {
+      let ms = null;
+      if(samples.length >= 2) ms = samples.reduce((a,b)=>a+b,0) / samples.length;
+      else if(pts.length >= 2){
+        let d = 0; for(let i=1;i<pts.length;i++) d += haversine(pts[i-1], pts[i]);
+        const dt = (pts[pts.length-1].t - pts[0].t) / 1000; if(dt > 0) ms = d / dt;
+      }
+      if(ms === null) return finishGps(g, null, 'Not enough GPS readings. Try again with a clear view of the sky.');
+      const mph = ms * 2.236936;
+      if(mph < 0.3) return finishGps(g, null, `Gear ${g}: you weren't moving. Drive steady in that gear, then tap GPS.`);
+      finishGps(g, Math.round(mph*10)/10);
+    }, DUR*1000);
+  }
+  function finishGps(g, mph, msg){
+    if(!gpsRead) return;
+    navigator.geolocation.clearWatch(gpsRead.watch); clearInterval(gpsRead.timer); clearTimeout(gpsRead.end);
+    gpsRead = null;
+    if(mph){ gpsSp[g] = mph; store.set('pm_gps', gpsSp); flashSaved(`Gear ${g} measured at ${mph} mph`); }
+    else flashSaved(msg);
+    refreshGears();
+  }
+
+  const gearList = () => {
+    const out = [];
+    for(let g=1; g<=15; g++){ const i = gearInfo(g); if(i) out.push({g, v: i.calc, shown: i.shown, src: i.src}); }
+    return out.sort((a,b) => a.v - b.v || a.g - b.g);
+  };
 
   // Work out how long to run in each gear so the whole distance takes exactly the first trip's time.
   function makePlan(distFt, T){
@@ -251,7 +366,7 @@ details[open]{display:flex;flex-direction:column;gap:10px}
     const need = D / (T / 3600);             // mph
     const gears = gearList();
     if(!gears.length) return {need, steps:[], msg:'Enter speeds for the gears you use to get a gear plan.'};
-    const legFor = (gear, secs) => ({g:gear.g, v:gear.v, secs, ft: gear.v * 5280 * secs / 3600});
+    const legFor = (gear, secs) => ({g:gear.g, v:gear.v, shown:gear.shown, src:gear.src, secs, ft: gear.v * 5280 * secs / 3600});
     const exact = gears.find(x => Math.abs(x.v - need) < 0.05);
     if(exact) return {need, steps:[legFor(exact, T)]};
     const fastest = gears[gears.length-1], slowest = gears[0];
@@ -276,23 +391,27 @@ details[open]{display:flex;flex-direction:column;gap:10px}
     const d = parseFloat($('nextDist').value);
     $('steps').innerHTML = '';
     plan = null;
+    $('flipBtn').hidden = true;
     if(!ref){ $('needSpd').textContent='—'; $('needTime').textContent='—'; $('planNote').textContent='Save a first trip first. Its time is the time every load should take.'; updateRunBtn(); return; }
     $('needTime').textContent = fmtTime(ref.seconds);
     if(!(d > 0)){ $('needSpd').textContent='—'; $('planNote').textContent='Enter the distance for this load.'; updateRunBtn(); return; }
     const p = makePlan(d, ref.seconds);
     $('needSpd').textContent = p.need.toFixed(2);
     if(p.msg){ $('planNote').textContent = p.msg; updateRunBtn(); return; }
+    if(p.steps.length === 2 && reversed) p.steps.reverse();
     plan = p;
+    $('flipBtn').hidden = p.steps.length !== 2;
+    if(p.steps.length === 2) $('flipBtn').textContent = reversed ? 'Start in the higher gear instead' : 'Start in the lower gear instead';
     const total = p.steps.reduce((a,s)=>a+s.ft,0);
     $('planNote').textContent = p.steps.length === 2
-      ? `Run gear ${p.steps[0].g} first, then downshift to gear ${p.steps[1].g}. Times add up to ${fmtTime(ref.seconds)}.`
+      ? `Run gear ${p.steps[0].g} first, then ${p.steps[1].v < p.steps[0].v ? 'downshift' : 'upshift'} to gear ${p.steps[1].g}. Times add up to ${fmtTime(ref.seconds)}.`
       : `One gear covers it. Total ${fmtFt(total)} ft.`;
     p.steps.forEach((s, i) => {
       const li = document.createElement('li');
       li.className = 'step';
       const share = Math.round(s.ft / total * 100);
       li.innerHTML = `<div class="gno">${s.g}</div>
-        <div class="what"><strong>${i===0 && p.steps.length===2 ? 'First' : p.steps.length===2 ? 'Then' : 'Whole trip'} · gear ${s.g} at ${s.v} mph</strong>
+        <div class="what"><strong>${i===0 && p.steps.length===2 ? 'First' : p.steps.length===2 ? 'Then' : 'Whole trip'} · gear ${s.g} at ${s.shown} mph${s.src==='gps' ? ' (GPS)' : ''}</strong>
         <span>${fmtFt(s.ft)} ft · about ${share}% of the distance</span></div>
         <div class="dur">${fmtTime(s.secs)}</div>`;
       $('steps').appendChild(li);
@@ -306,18 +425,28 @@ details[open]{display:flex;flex-direction:column;gap:10px}
   // ---------- shift timer ----------
   let run = null, runTick = null, audio = null;
   function updateRunBtn(){ if(!run){ $('runBtn').disabled = !plan; } }
-  function beep(times){
+  // Shift alarm: harsh square-wave two-tone near 2-3 kHz (where hearing is most sensitive), about 4 seconds.
+  function beep(kind){
+    const shift = kind === 'shift';
     try{
       audio = audio || new (window.AudioContext || window.webkitAudioContext)();
-      for(let i=0;i<times;i++){
+      audio.resume && audio.resume();
+      const master = audio.createGain(); master.gain.value = 1; master.connect(audio.destination);
+      const pulses = shift ? 10 : 4, len = shift ? 0.3 : 0.25, gap = shift ? 0.1 : 0.15;
+      for(let i=0;i<pulses;i++){
         const o = audio.createOscillator(), g = audio.createGain();
-        o.frequency.value = 1100; o.connect(g); g.connect(audio.destination);
-        const t = audio.currentTime + i*0.35;
-        g.gain.setValueAtTime(0.0001,t); g.gain.exponentialRampToValueAtTime(0.6,t+0.02); g.gain.exponentialRampToValueAtTime(0.0001,t+0.28);
-        o.start(t); o.stop(t+0.3);
+        o.type = 'square';
+        o.frequency.value = shift ? (i % 2 ? 2000 : 2700) : 1500;
+        o.connect(g); g.connect(master);
+        const t = audio.currentTime + i*(len+gap);
+        g.gain.setValueAtTime(0.0001, t);
+        g.gain.exponentialRampToValueAtTime(1, t+0.01);
+        g.gain.setValueAtTime(1, t+len-0.02);
+        g.gain.exponentialRampToValueAtTime(0.0001, t+len);
+        o.start(t); o.stop(t+len+0.01);
       }
     }catch(e){}
-    try{ navigator.vibrate && navigator.vibrate([400,150,400,150,400]); }catch(e){}
+    try{ navigator.vibrate && navigator.vibrate(shift ? [700,200,700,200,700,200,700,200,700] : [400,150,400]); }catch(e){}
   }
   function startRun(){
     if(!plan) return;
@@ -342,19 +471,19 @@ details[open]{display:flex;flex-direction:column;gap:10px}
     let phase = el < shiftAt ? 0 : el < endAt ? 1 : 2;
     if(s.length === 1 && phase === 1) phase = 0;
     if(phase !== run.phase){
-      if(phase === 1){ beep(3); $('runner').className = 'runner shift'; setTimeout(()=>{ if(run && run.phase===1) $('runner').className='runner'; }, 3200); }
-      if(phase === 2){ beep(2); $('runner').className = 'runner done'; }
+      if(phase === 1){ beep('shift'); $('runner').className = 'runner shift'; setTimeout(()=>{ if(run && run.phase===1) $('runner').className='runner'; }, 5200); }
+      if(phase === 2){ beep('done'); $('runner').className = 'runner done'; }
       run.phase = phase;
     }
     if(phase === 0){
       $('runLbl').textContent = 'Drive in';
-      $('runGear').textContent = `Gear ${s[0].g} · ${s[0].v} mph`;
+      $('runGear').textContent = `Gear ${s[0].g} · ${s[0].shown} mph`;
       $('runCountLbl').textContent = s.length === 2 ? 'Shift in' : 'Finish in';
       $('runCount').textContent = fmtTime((s.length === 2 ? shiftAt : endAt) - el);
       $('runNext').textContent = s.length === 2 ? `Then gear ${s[1].g} for ${fmtTime(s[1].secs)}` : '';
     } else if(phase === 1){
-      $('runLbl').textContent = 'Downshift to';
-      $('runGear').textContent = `Gear ${s[1].g} · ${s[1].v} mph`;
+      $('runLbl').textContent = s[1].v < s[0].v ? 'Downshift to' : 'Upshift to';
+      $('runGear').textContent = `Gear ${s[1].g} · ${s[1].shown} mph`;
       $('runCountLbl').textContent = 'Finish in';
       $('runCount').textContent = fmtTime(endAt - el);
       $('runNext').textContent = '';
@@ -367,6 +496,7 @@ details[open]{display:flex;flex-direction:column;gap:10px}
     }
   }
   $('runBtn').addEventListener('click', () => run ? stopRun() : startRun());
+  $('flipBtn').addEventListener('click', () => { if(run) stopRun(); reversed = !reversed; store.set('pm_rev', reversed); renderPlan(); });
 
   // ---------- GPS ----------
   function setGps(state, text){ $('gpsDot').className = 'dot ' + state; $('gpsText').textContent = text; }
@@ -441,7 +571,7 @@ details[open]{display:flex;flex-direction:column;gap:10px}
 
   // ---------- init ----------
   const savedNext = store.get('pm_next_ft'); if(savedNext) $('nextDist').value = savedNext;
-  buildGears(); renderRef(); renderLive();
+  buildGears(); renderRef(); refreshGears(); renderLive();
 })();
 </script>
 </body>
