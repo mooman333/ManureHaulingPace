@@ -61,7 +61,7 @@ details[open]{display:flex;flex-direction:column;gap:10px}
 
 /* gear table: one row per gear — default | GPS reading | speedo entry */
 .gt{display:flex;flex-direction:column;gap:6px}
-.gh,.gr{display:grid;grid-template-columns:2.2em 1fr 1.25fr 1fr;gap:6px;align-items:center}
+.gh,.gr{display:grid;grid-template-columns:2.8rem 1fr 1.25fr 1fr;gap:8px;align-items:center}
 .gh{font-size:.6rem;line-height:1.15;align-items:end;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);text-align:center}
 .gr b{font:700 1.4rem/1 var(--display);color:var(--muted);text-align:center}
 .gr.set b{color:var(--go)}
@@ -148,7 +148,7 @@ details[open]{display:flex;flex-direction:column;gap:10px}
       <summary>Enter a trip by hand instead</summary>
       <div class="row">
         <label class="field"><span class="lbl">Distance (ft)</span><input id="manDist" type="number" inputmode="decimal" min="0" step="1" placeholder="1500"></label>
-        <label class="field"><span class="lbl">Minutes</span><input id="manMin" type="number" inputmode="decimal" min="0" step="0.1" placeholder="4.5"></label>
+        <label class="field"><span class="lbl">Time (min.sec)</span><input id="manMin" type="text" inputmode="decimal" autocomplete="off" placeholder="3.47"><span class="note" id="manMinShow">3.47 means 3 min 47 sec</span></label>
       </div>
       <button class="smallbtn" id="manSave">Save as first trip</button>
     </details>
@@ -809,10 +809,28 @@ details[open]{display:flex;flex-direction:column;gap:10px}
   // ---------- events ----------
   $('startStop').addEventListener('click', () => tracking ? stop() : start());
   $('nextDist').addEventListener('input', () => { if(run) stopRun(); renderPlan(); store.set('pm_next_ft', $('nextDist').value); });
+  // "3.47" = 3 min 47 sec, "3.3" = 3 min 30 sec, "3" = 3 min. A colon works too (3:47).
+  function parseMinSec(txt){
+    const m = String(txt).trim().replace(',', '.').match(/^(\d*)(?:[.:](\d{1,2}))?$/);
+    if(!m || (m[1] === '' && !m[2])) return null;
+    const min = parseInt(m[1] || '0', 10);
+    let sec = 0;
+    if(m[2]) sec = m[2].length === 1 ? parseInt(m[2], 10) * 10 : parseInt(m[2], 10);
+    if(sec >= 60) return null;
+    const total = min * 60 + sec;
+    return total > 0 ? total : null;
+  }
+  $('manMin').addEventListener('input', () => {
+    const v = $('manMin').value.trim(), t = parseMinSec(v);
+    $('manMinShow').textContent = !v ? '3.47 means 3 min 47 sec'
+      : t === null ? 'Use minutes.seconds, seconds under 60'
+      : `= ${Math.floor(t/60)} min ${t%60} sec`;
+  });
   $('manSave').addEventListener('click', () => {
-    const d = parseFloat($('manDist').value), mins = parseFloat($('manMin').value);
-    if(!(d > 0) || !(mins > 0)){ $('refNote').textContent = 'Enter both a distance and minutes above zero.'; return; }
-    ref = {meters: fromFt(d), seconds: mins*60, when: Date.now()};
+    const d = parseFloat($('manDist').value), secs = parseMinSec($('manMin').value);
+    if(!(d > 0)){ $('refNote').textContent = 'Enter a distance above zero.'; return; }
+    if(secs === null){ $('refNote').textContent = 'Enter the time as minutes.seconds, like 3.47 for 3 min 47 sec.'; return; }
+    ref = {meters: fromFt(d), seconds: secs, when: Date.now()};
     store.set('pm_ref_ft', ref); renderRef();
   });
   let clearArmed = false;
