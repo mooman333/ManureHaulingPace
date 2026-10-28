@@ -92,6 +92,15 @@ details[open]{display:flex;flex-direction:column;gap:10px}
 .warn{background:color-mix(in srgb,var(--hi) 22%,var(--surface));border:1px solid var(--hi);border-radius:10px;padding:10px 12px;font-size:.88rem;margin:0}
 
 /* shift timer */
+#runBtn{padding:34px 18px;font-size:2.5rem;min-height:120px;border-radius:18px}
+.runner{scroll-margin-bottom:24px}
+.live{font:600 .95rem var(--body);font-variant-numeric:tabular-nums}
+.log{display:flex;flex-direction:column;gap:8px;margin:0;padding:0;list-style:none}
+.log li{border:1px solid var(--line);border-radius:12px;padding:10px 12px;background:var(--bg);display:flex;flex-direction:column;gap:3px;font-size:.88rem;font-variant-numeric:tabular-nums}
+.log li strong{font-size:.95rem}
+.log .k{color:var(--muted)}
+.log .early{color:var(--stop);font-weight:600}
+.log .late{color:var(--go);font-weight:600}
 .runner{border-radius:14px;padding:16px;background:var(--ink);color:var(--bg);display:flex;flex-direction:column;gap:6px;text-align:center}
 .runner .lbl{color:color-mix(in srgb,var(--bg) 70%,var(--ink))}
 .runner .now{font:700 3.4rem/1 var(--display)}
@@ -112,7 +121,7 @@ details[open]{display:flex;flex-direction:column;gap:10px}
   </header>
 
   <div id="map" aria-label="Map"></div>
-  <div class="gps"><span class="dot" id="gpsDot"></span><span id="gpsText">GPS starts when you press Start</span></div>
+  <div class="gps"><span class="dot" id="gpsDot"></span><span id="gpsText">Finding GPS…</span></div>
 
   <div class="odo">
     <div><div class="lbl">Distance</div><div class="val"><span id="dist">0</span><small>ft</small></div></div>
@@ -172,7 +181,15 @@ details[open]{display:flex;flex-direction:column;gap:10px}
       <div class="lbl" id="runCountLbl">Shift in</div>
       <div class="count" id="runCount">0:00</div>
       <div class="lbl" id="runNext"></div>
+      <div class="live" id="runLive"></div>
     </div>
+  </section>
+
+  <section>
+    <h2>Shift timer runs</h2>
+    <p class="note">Each time you use the shift timer, GPS records how far you went, for reference only. Your first trip stays the baseline.</p>
+    <ol class="log" id="runLog"></ol>
+    <button class="link" id="clearLog" hidden>Clear run log</button>
   </section>
 
   <button class="link" id="clearRef">Clear saved trip</button>
@@ -243,7 +260,8 @@ details[open]{display:flex;flex-direction:column;gap:10px}
       $('refDist').textContent = fmtFt(toFt(ref.meters));
       $('refTime').textContent = fmtTime(ref.seconds);
       $('refSpd').textContent = mphOf(ref.meters, ref.seconds).toFixed(1);
-      $('refNote').textContent = ref.when ? 'Saved ' + new Date(ref.when).toLocaleString() : 'Saved';
+      $('refNote').textContent = (ref.when ? 'Saved ' + new Date(ref.when).toLocaleString() : 'Saved')
+        + (ref.lockWait > 2 ? `. GPS took ${ref.lockWait} s to lock after Start, so distance and average speed read low. Record it again after the green dot shows.` : '');
     }
     renderPlan();
   }
@@ -330,7 +348,7 @@ details[open]{display:flex;flex-direction:column;gap:10px}
     if(gpsRead) return;
     if(!('geolocation' in navigator)){ flashSaved('This browser has no GPS access.'); return; }
     const btn = $('gps'+g), samples = [], pts = [];
-    const DUR = 6;
+    const DUR = 10;
     gpsRead = {g, t0: Date.now()};
     btn.classList.add('busy'); btn.classList.remove('has');
     const tick = () => { const left = Math.max(0, DUR - Math.floor((Date.now()-gpsRead.t0)/1000)); btn.textContent = `Reading ${left}s`; };
@@ -459,16 +477,76 @@ details[open]{display:flex;flex-direction:column;gap:10px}
     }catch(e){}
     try{ navigator.vibrate && navigator.vibrate(shift ? [700,200,700,200,700,200,700,200,700] : [400,150,400]); }catch(e){}
   }
+  // GPS distance for each shift-timer run (reference only; never changes the first-trip baseline).
+  let track = null, runLog = store.get('pm_runs') || [];
+  const runTimes = s => { const endAt = s.reduce((a,x)=>a+x.secs,0); return {endAt, shiftAt: s.length === 2 ? s[0].secs : endAt}; };
+  function plannedFtAt(s, el){       // where the plan says you should be after el seconds
+    let ft = 0, t = el;
+    for(const x of s){ const d = Math.min(t, x.secs); ft += x.v * 5280 * d / 3600; t -= d; if(t <= 0) break; }
+    return ft;
+  }
+  function trackPoint(pt, acc){
+    if(!track || acc > 40) return;
+    if(!track.last){ track.last = pt; return; }
+    const d = haversine(track.last, pt);
+    if(d < Math.max(3, acc*0.4)) return;
+    track.m += d; track.leg[Math.min(run ? run.phase : 2, 2)] += d; track.last = pt;
+  }
   function startRun(){
     if(!plan) return;
     try{ audio = audio || new (window.AudioContext || window.webkitAudioContext)(); audio.resume(); }catch(e){}
-    run = {steps: plan.steps, t0: Date.now(), phase: 0};
+    startGps();
+    run = {steps: plan.steps.map(x => Object.assign({}, x)), t0: Date.now(), phase: 0};
+    track = {m: 0, leg: [0,0,0], last: (fix && Date.now() - fix.t < 4000 && fix.acc <= 40) ? fix.pt : null, atEnd: null};
     $('runner').hidden = false; $('runner').className = 'runner';
     $('runBtn').textContent = 'Stop shift timer'; $('runBtn').classList.add('stop'); $('runBtn').disabled = false;
     keepAwake();
     tickRun(); runTick = setInterval(tickRun, 250);
+    const smooth = !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    requestAnimationFrame(() => $('runner').scrollIntoView({behavior: smooth ? 'smooth' : 'auto', block: 'end'}));
   }
+  function saveRun(){
+    if(!run || !track) return;
+    if(fix && track.last && Date.now() - fix.t < 4000 && fix.acc <= 40){   // last stretch
+      const d = haversine(track.last, fix.pt); if(d > 0.5){ track.m += d; track.leg[Math.min(run.phase,2)] += d; }
+    }
+    const el = (Date.now() - run.t0) / 1000, s = run.steps, {endAt, shiftAt} = runTimes(s);
+    if(el < 15) return;                           // ignore accidental taps
+    const legT = [Math.min(el, shiftAt), s.length === 2 ? Math.max(0, Math.min(el, endAt) - shiftAt) : 0];
+    const legs = s.map((x, i) => ({g: x.g, shown: x.shown, plan: +x.v.toFixed(2),
+      gps: legT[i] >= 20 ? +((track.leg[i] / 1609.344) / (legT[i] / 3600)).toFixed(2) : null}));
+    runLog.unshift({when: Date.now(), planFt: Math.round(s.reduce((a,x)=>a+x.ft,0)), planSecs: Math.round(endAt),
+      secs: Math.round(el), ft: Math.round(toFt(track.m)), endFt: track.atEnd, legs});
+    runLog = runLog.slice(0, 50);
+    store.set('pm_runs', runLog);
+    renderLog();
+  }
+  function renderLog(){
+    const ol = $('runLog'); ol.innerHTML = '';
+    $('clearLog').hidden = !runLog.length;
+    if(!runLog.length){ const li = document.createElement('li'); li.innerHTML = '<span class="k">No runs yet. Start the shift timer and your distance shows up here.</span>'; ol.appendChild(li); return; }
+    runLog.forEach(r => {
+      const li = document.createElement('li');
+      const when = new Date(r.when).toLocaleString([], {month:'short', day:'numeric', hour:'numeric', minute:'2-digit'});
+      let html = `<strong>${when} · planned ${r.planFt.toLocaleString()} ft in ${fmtTime(r.planSecs)}</strong>`;
+      if(r.endFt != null){
+        const diff = r.endFt - r.planFt;
+        html += `<span>At timer end: ${r.endFt.toLocaleString()} ft <span class="${diff > 0 ? 'early' : 'late'}">(${diff >= 0 ? '+' : ''}${diff.toLocaleString()} ft vs plan)</span></span>`;
+        html += `<span class="k">Stopped at ${fmtTime(r.secs)} after ${r.ft.toLocaleString()} ft</span>`;
+      } else {
+        html += `<span>Stopped at ${fmtTime(r.secs)}, <span class="early">${fmtTime(r.planSecs - r.secs)} before timer end</span>, after ${r.ft.toLocaleString()} ft</span>`;
+      }
+      r.legs.forEach(l => { if(l.gps != null) html += `<span class="k">Gear ${l.g}: dash ${l.shown} mph · GPS ${l.gps.toFixed(1)} mph</span>`; });
+      li.innerHTML = html; ol.appendChild(li);
+    });
+  }
+  let logArmed = false;
+  $('clearLog').addEventListener('click', () => {
+    if(!logArmed){ logArmed = true; $('clearLog').textContent = 'Tap again to clear run log'; setTimeout(()=>{ logArmed = false; $('clearLog').textContent = 'Clear run log'; }, 3000); return; }
+    logArmed = false; $('clearLog').textContent = 'Clear run log'; runLog = []; store.del('pm_runs'); renderLog();
+  });
   function stopRun(){
+    saveRun(); track = null;
     clearInterval(runTick); run = null;
     $('runner').hidden = true;
     $('runBtn').textContent = 'Start shift timer'; $('runBtn').classList.remove('stop');
@@ -483,7 +561,7 @@ details[open]{display:flex;flex-direction:column;gap:10px}
     if(s.length === 1 && phase === 1) phase = 0;
     if(phase !== run.phase){
       if(phase === 1){ beep('shift'); $('runner').className = 'runner shift'; setTimeout(()=>{ if(run && run.phase===1) $('runner').className='runner'; }, 5200); }
-      if(phase === 2){ beep('done'); $('runner').className = 'runner done'; }
+      if(phase === 2){ beep('done'); $('runner').className = 'runner done'; if(track) track.atEnd = Math.round(toFt(track.m)); }
       run.phase = phase;
     }
     if(phase === 0){
@@ -503,34 +581,53 @@ details[open]{display:flex;flex-direction:column;gap:10px}
       $('runGear').textContent = 'End of run';
       $('runCountLbl').textContent = 'Total time';
       $('runCount').textContent = fmtTime(endAt);
-      $('runNext').textContent = '';
+      $('runNext').textContent = 'Tap Stop shift timer to save this run';
+    }
+    if(track){
+      const drove = toFt(track.m), should = plannedFtAt(s, Math.min(el, endAt)), diff = Math.round(drove - should);
+      $('runLive').textContent = track.last
+        ? `Driven ${fmtFt(drove)} ft · plan ${fmtFt(should)} ft · ${diff >= 0 ? diff + ' ft ahead' : (-diff) + ' ft behind'}`
+        : 'Waiting for GPS to measure distance…';
     }
   }
   $('runBtn').addEventListener('click', () => run ? stopRun() : startRun());
   $('flipBtn').addEventListener('click', () => { if(run) stopRun(); reversed = !reversed; store.set('pm_rev', reversed); renderPlan(); });
 
   // ---------- GPS ----------
+  // GPS runs from page open so it's locked on before you press Start; trips start from the current fix.
+  let fix = null, lockWait = 0;           // latest fix {pt, acc, t}; seconds waited for a lock after Start
   function setGps(state, text){ $('gpsDot').className = 'dot ' + state; $('gpsText').textContent = text; }
-  function onPos(p){
-    const {latitude:lat, longitude:lng, accuracy} = p.coords;
-    const pt = {lat, lng};
-    if(!here){ here = L.circleMarker(pt, {radius:7, color:'#fff', weight:2, fillColor:'#E7A817', fillOpacity:1}).addTo(map); }
-    here.setLatLng(pt);
-    setGps(accuracy <= 20 ? 'ok' : accuracy <= 50 ? 'weak' : 'bad', `GPS accuracy ±${Math.round(accuracy*FT_PER_M)} ft`);
-    if(!tracking || accuracy > 50) return;
+  function addPoint(pt){
     if(!last){
       last = pt; path.push(pt); line.setLatLngs(path);
       startMarker = L.circleMarker(pt, {radius:6, color:'#1E6B4E', fillColor:'#1E6B4E', fillOpacity:1}).addTo(map);
       map.setView(pt, 17); return;
     }
-    const d = haversine(last, pt);
-    if(d < Math.max(4, accuracy*0.5)) return;
-    meters += d; last = pt; path.push(pt);
+    meters += haversine(last, pt); last = pt; path.push(pt);
     line.setLatLngs(path); map.panTo(pt, {animate:true});
+  }
+  function onPos(p){
+    const {latitude:lat, longitude:lng, accuracy} = p.coords;
+    const pt = {lat, lng};
+    fix = {pt, acc: accuracy, t: Date.now()};
+    if(!here){ here = L.circleMarker(pt, {radius:7, color:'#fff', weight:2, fillColor:'#E7A817', fillOpacity:1}).addTo(map); if(!tracking) map.setView(pt, 17); }
+    here.setLatLng(pt);
+    const ft = Math.round(accuracy*FT_PER_M);
+    setGps(accuracy <= 15 ? 'ok' : accuracy <= 40 ? 'weak' : 'bad',
+      tracking ? `GPS accuracy ±${ft} ft` : accuracy <= 15 ? `GPS ready ±${ft} ft` : `GPS weak ±${ft} ft. Wait for a green dot before starting.`);
+    trackPoint(pt, accuracy);
+    if(!tracking || accuracy > 40) return;
+    if(!last){ lockWait = (Date.now() - startTime) / 1000; addPoint(pt); return; }
+    if(haversine(last, pt) < Math.max(3, accuracy*0.4)) return;   // ignore jitter; distance keeps building from the last kept point
+    addPoint(pt);
   }
   function onErr(e){
     setGps('bad', e.code === 1 ? 'Location blocked. Allow location for this page in your browser settings.'
       : e.code === 2 ? 'Location unavailable. Try going outside.' : 'Waiting for GPS…');
+  }
+  function startGps(){
+    if(!('geolocation' in navigator)){ setGps('bad','This browser has no GPS access.'); return; }
+    if(watchId === null) watchId = navigator.geolocation.watchPosition(onPos, onErr, {enableHighAccuracy:true, maximumAge:0, timeout:20000});
   }
   async function keepAwake(){ try{ if('wakeLock' in navigator && !wakeLock) wakeLock = await navigator.wakeLock.request('screen'); }catch(e){} }
   function releaseWake(){ try{ wakeLock && wakeLock.release(); }catch(e){} wakeLock = null; }
@@ -538,11 +635,12 @@ details[open]{display:flex;flex-direction:column;gap:10px}
 
   function start(){
     if(!('geolocation' in navigator)){ setGps('bad','This browser has no GPS access.'); return; }
-    tracking = true; meters = 0; last = null; path = []; line.setLatLngs([]);
+    startGps();
+    tracking = true; meters = 0; last = null; path = []; line.setLatLngs([]); lockWait = 0;
     if(startMarker){ map.removeLayer(startMarker); startMarker = null; }
     startTime = Date.now();
-    setGps('weak','Finding your location…');
-    watchId = navigator.geolocation.watchPosition(onPos, onErr, {enableHighAccuracy:true, maximumAge:0, timeout:15000});
+    if(fix && Date.now() - fix.t < 4000 && fix.acc <= 40) addPoint(fix.pt);   // already locked: start right here
+    else setGps('weak','Finding your location… distance starts when GPS locks.');
     timerId = setInterval(renderLive, 1000);
     keepAwake();
     $('startStop').textContent = 'Stop'; $('startStop').classList.add('stop');
@@ -550,17 +648,18 @@ details[open]{display:flex;flex-direction:column;gap:10px}
   }
   function stop(){
     tracking = false;
-    if(watchId !== null) navigator.geolocation.clearWatch(watchId);
-    watchId = null; clearInterval(timerId);
+    clearInterval(timerId);
     if(!run) releaseWake();
+    // count the last stretch since the most recent kept point
+    if(last && fix && Date.now() - fix.t < 4000 && fix.acc <= 40){ const d = haversine(last, fix.pt); if(d > 0.5){ meters += d; path.push(fix.pt); line.setLatLngs(path); } }
     const seconds = (Date.now()-startTime)/1000;
     $('startStop').textContent = 'Start'; $('startStop').classList.remove('stop');
     if(meters > 0 && seconds > 0){
-      ref = {meters, seconds, when: Date.now()};
+      ref = {meters, seconds, when: Date.now(), lockWait: Math.round(lockWait)};
       store.set('pm_ref_ft', ref);
       if(path.length > 1) map.fitBounds(line.getBounds(), {padding:[24,24]});
     } else {
-      setGps('weak','No distance recorded. Make sure GPS has a fix before you move.');
+      setGps('weak','No distance recorded. Wait for a green GPS dot before you press Start.');
     }
     renderRef(); renderLive();
   }
@@ -582,7 +681,8 @@ details[open]{display:flex;flex-direction:column;gap:10px}
 
   // ---------- init ----------
   const savedNext = store.get('pm_next_ft'); if(savedNext) $('nextDist').value = savedNext;
-  buildGears(); renderRef(); refreshGears(); renderLive();
+  buildGears(); renderRef(); refreshGears(); renderLive(); renderLog();
+  startGps();
 })();
 </script>
 </body>
