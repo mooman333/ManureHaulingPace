@@ -92,6 +92,11 @@ details[open]{display:flex;flex-direction:column;gap:10px}
 .warn{background:color-mix(in srgb,var(--hi) 22%,var(--surface));border:1px solid var(--hi);border-radius:10px;padding:10px 12px;font-size:.88rem;margin:0}
 
 /* shift timer */
+#armBtn{background:var(--hi);color:var(--hi-ink);padding:24px 18px;font-size:1.9rem}
+#armBtn.armed{background:var(--surface);color:var(--ink);border:2px solid var(--hi)}
+.runner.armed{background:var(--hi);color:var(--hi-ink)}
+.runner.armed .lbl{color:var(--hi-ink)}
+.tset{display:flex;gap:12px;flex-wrap:wrap}
 #runBtn{padding:34px 18px;font-size:2.5rem;min-height:120px;border-radius:18px}
 .runner{scroll-margin-bottom:24px}
 .live{font:600 .95rem var(--body);font-variant-numeric:tabular-nums}
@@ -174,7 +179,16 @@ details[open]{display:flex;flex-direction:column;gap:10px}
     <p class="note" id="planNote">Save a first trip, enter your gear speeds, then enter the next distance.</p>
     <ol class="steps" id="steps"></ol>
     <button class="flip" id="flipBtn" hidden>Start in the lower gear instead</button>
+    <button class="big" id="armBtn" disabled>Auto start when I pull away</button>
     <button class="big" id="runBtn" disabled>Start shift timer</button>
+    <details>
+      <summary>Timer start settings</summary>
+      <div class="tset">
+        <label class="field"><span class="lbl">Head start when tapped (sec)</span><input id="headStart" type="number" inputmode="decimal" min="0" max="10" step="0.5"></label>
+        <label class="field"><span class="lbl">PTO on before pulling away (sec)</span><input id="ptoLead" type="number" inputmode="decimal" min="0" max="10" step="0.5"></label>
+      </div>
+      <p class="note">Start shift timer counts as if it started this many seconds ago. Auto start begins the timer from when GPS sees you start speeding up, minus the PTO time.</p>
+    </details>
     <div class="runner" id="runner" hidden>
       <div class="lbl" id="runLbl">Drive in</div>
       <div class="now" id="runGear">Gear —</div>
@@ -453,7 +467,11 @@ details[open]{display:flex;flex-direction:column;gap:10px}
 
   // ---------- shift timer ----------
   let run = null, runTick = null, audio = null;
-  function updateRunBtn(){ if(!run){ $('runBtn').disabled = !plan; } }
+  function updateRunBtn(){
+    if(!run){ $('runBtn').disabled = !plan; }
+    $('armBtn').disabled = !plan || !!run;
+    if(!plan && armed) disarm();
+  }
   // Shift alarm: harsh square-wave two-tone near 2-3 kHz (where hearing is most sensitive), about 4 seconds.
   function beep(kind){
     const shift = kind === 'shift';
@@ -479,6 +497,71 @@ details[open]{display:flex;flex-direction:column;gap:10px}
   }
   // GPS distance for each shift-timer run (reference only; never changes the first-trip baseline).
   let track = null, runLog = store.get('pm_runs') || [];
+  let headStart = store.get('pm_head'); if(headStart === null) headStart = 1.5;
+  let ptoLead = store.get('pm_pto'); if(ptoLead === null) ptoLead = 1;
+  $('headStart').value = headStart; $('ptoLead').value = ptoLead;
+  $('headStart').addEventListener('input', () => { const n = parseFloat($('headStart').value); if(n >= 0){ headStart = n; store.set('pm_head', n); } });
+  $('ptoLead').addEventListener('input', () => { const n = parseFloat($('ptoLead').value); if(n >= 0){ ptoLead = n; store.set('pm_pto', n); } });
+
+  // ---------- auto start ----------
+  // Armed on the way in: wait for a slow-down (or stop), then start the timer when speed picks back up,
+  // back-dated to the moment the speed began rising minus the PTO lead time.
+  let armed = null;
+  function scrollToRunner(){
+    const smooth = !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    requestAnimationFrame(() => $('runner').scrollIntoView({behavior: smooth ? 'smooth' : 'auto', block: 'end'}));
+  }
+  function arm(){
+    if(!plan || run) return;
+    try{ audio = audio || new (window.AudioContext || window.webkitAudioContext)(); audio.resume(); }catch(e){}
+    startGps(); keepAwake();
+    armed = {peak: 0, dip: false, dipMin: Infinity, lowT: null, rising: 0, prev: null, v: null};
+    $('armBtn').textContent = 'Cancel auto start'; $('armBtn').classList.add('armed');
+    $('runner').hidden = false; $('runner').className = 'runner armed';
+    renderArmed(); scrollToRunner();
+  }
+  function disarm(){
+    armed = null;
+    $('armBtn').textContent = 'Auto start when I pull away'; $('armBtn').classList.remove('armed');
+    if(!run){ $('runner').hidden = true; if(!tracking) releaseWake(); }
+    updateRunBtn();
+  }
+  function renderArmed(){
+    if(!armed) return;
+    $('runLbl').textContent = 'Auto start armed';
+    $('runGear').textContent = armed.dip ? 'Pull away' : 'Slow down · PTO on';
+    $('runCountLbl').textContent = 'GPS speed';
+    $('runCount').textContent = armed.v === null ? '— mph' : armed.v.toFixed(1) + ' mph';
+    $('runNext').textContent = armed.dip ? 'Timer starts when you speed up' : 'Waiting for you to slow down';
+    $('runLive').textContent = '';
+  }
+  function armPoint(p){
+    if(!armed) return;
+    const now = Date.now(), c = p.coords;
+    let v = (c.speed !== null && !isNaN(c.speed)) ? c.speed * 2.236936 : null;     // mph
+    if(v === null && armed.prev && c.accuracy <= 40){
+      const dt = (now - armed.prev.t) / 1000;
+      if(dt > 0) v = haversine(armed.prev.pt, {lat: c.latitude, lng: c.longitude}) / dt * 2.236936;
+    }
+    armed.prev = {t: now, pt: {lat: c.latitude, lng: c.longitude}};
+    if(v === null) return;
+    armed.v = v;
+    if(!armed.dip){
+      armed.peak = Math.max(armed.peak, v);
+      if(v <= 1.0 || (armed.peak >= 2 && v <= armed.peak * 0.5)){ armed.dip = true; armed.dipMin = v; armed.lowT = now; }
+    } else {
+      if(v <= armed.dipMin + 0.3){ armed.dipMin = Math.min(armed.dipMin, v); armed.lowT = now; armed.rising = 0; }
+      else if(v >= armed.dipMin + 0.8 && v >= 1.2){
+        armed.rising++;
+        if(armed.rising >= 2){                     // two rising readings in a row: you're pulling away
+          const t0 = armed.lowT - ptoLead * 1000;
+          disarm(); beep('done'); startRun(t0); return;
+        }
+      }
+    }
+    renderArmed();
+  }
+  $('armBtn').addEventListener('click', () => armed ? disarm() : arm());
   const runTimes = s => { const endAt = s.reduce((a,x)=>a+x.secs,0); return {endAt, shiftAt: s.length === 2 ? s[0].secs : endAt}; };
   function plannedFtAt(s, el){       // where the plan says you should be after el seconds
     let ft = 0, t = el;
@@ -492,18 +575,19 @@ details[open]{display:flex;flex-direction:column;gap:10px}
     if(d < Math.max(3, acc*0.4)) return;
     track.m += d; track.leg[Math.min(run ? run.phase : 2, 2)] += d; track.last = pt;
   }
-  function startRun(){
+  function startRun(t0){
     if(!plan) return;
+    if(armed) disarm();
     try{ audio = audio || new (window.AudioContext || window.webkitAudioContext)(); audio.resume(); }catch(e){}
     startGps();
-    run = {steps: plan.steps.map(x => Object.assign({}, x)), t0: Date.now(), phase: 0};
+    run = {steps: plan.steps.map(x => Object.assign({}, x)), t0: t0 || Date.now(), phase: 0};
     track = {m: 0, leg: [0,0,0], last: (fix && Date.now() - fix.t < 4000 && fix.acc <= 40) ? fix.pt : null, atEnd: null};
     $('runner').hidden = false; $('runner').className = 'runner';
     $('runBtn').textContent = 'Stop shift timer'; $('runBtn').classList.add('stop'); $('runBtn').disabled = false;
+    $('armBtn').disabled = true;
     keepAwake();
     tickRun(); runTick = setInterval(tickRun, 250);
-    const smooth = !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    requestAnimationFrame(() => $('runner').scrollIntoView({behavior: smooth ? 'smooth' : 'auto', block: 'end'}));
+    scrollToRunner();
   }
   function saveRun(){
     if(!run || !track) return;
@@ -590,7 +674,7 @@ details[open]{display:flex;flex-direction:column;gap:10px}
         : 'Waiting for GPS to measure distance…';
     }
   }
-  $('runBtn').addEventListener('click', () => run ? stopRun() : startRun());
+  $('runBtn').addEventListener('click', () => run ? stopRun() : startRun(Date.now() - headStart * 1000));
   $('flipBtn').addEventListener('click', () => { if(run) stopRun(); reversed = !reversed; store.set('pm_rev', reversed); renderPlan(); });
 
   // ---------- GPS ----------
@@ -616,6 +700,7 @@ details[open]{display:flex;flex-direction:column;gap:10px}
     setGps(accuracy <= 15 ? 'ok' : accuracy <= 40 ? 'weak' : 'bad',
       tracking ? `GPS accuracy ±${ft} ft` : accuracy <= 15 ? `GPS ready ±${ft} ft` : `GPS weak ±${ft} ft. Wait for a green dot before starting.`);
     trackPoint(pt, accuracy);
+    armPoint(p);
     if(!tracking || accuracy > 40) return;
     if(!last){ lockWait = (Date.now() - startTime) / 1000; addPoint(pt); return; }
     if(haversine(last, pt) < Math.max(3, accuracy*0.4)) return;   // ignore jitter; distance keeps building from the last kept point
