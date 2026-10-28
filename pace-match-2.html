@@ -62,7 +62,7 @@ details[open]{display:flex;flex-direction:column;gap:10px}
 /* gear table: one row per gear — default | GPS reading | speedo entry */
 .gt{display:flex;flex-direction:column;gap:6px}
 .gh,.gr{display:grid;grid-template-columns:2.2em 1fr 1.25fr 1fr;gap:6px;align-items:center}
-.gh{font-size:.64rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);text-align:center}
+.gh{font-size:.6rem;line-height:1.15;align-items:end;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);text-align:center}
 .gr b{font:700 1.4rem/1 var(--display);color:var(--muted);text-align:center}
 .gr.set b{color:var(--go)}
 .gr input{font-size:1rem;padding:9px 6px;text-align:center;min-width:0}
@@ -156,16 +156,23 @@ details[open]{display:flex;flex-direction:column;gap:10px}
 
   <section>
     <h2>Gear speeds at 750 PTO rpm</h2>
-    <p class="note">Default is your saved speed. Tap GPS while driving in that gear to measure it. Speedo is what the tractor's speedometer reads, and it wins over the other two. The green box is the one in use.</p>
+    <p class="note">Tractor speedometer is what your dash reads in that gear. Tap GPS while driving steady to measure true speed, and it's used instead. A number in Override beats both. The green box is the speed used for timing. The shift timer always shows the tractor speedometer number so you can match it on the dash.</p>
     <div class="gt" id="gears">
-      <div class="gh"><span>Gear</span><span>Default</span><span>GPS</span><span>Speedo</span></div>
+      <div class="gh"><span>Gear</span><span>Tractor speedo&shy;meter</span><span>GPS</span><span>Over&shy;ride</span></div>
     </div>
     <div class="saved" id="gearSaved"></div>
-    <button class="link" id="resetDef">Reset defaults to built-in speeds</button>
-    <div class="corr" id="corr" hidden>
-      <p class="note" id="corrText"></p>
-      <label><input type="checkbox" id="corrOn"> Correct timing for speedometer error</label>
+    <button class="link" id="resetDef">Reset tractor speedometer column to built-in speeds</button>
+
+  </section>
+
+  <section>
+    <h2>Measure distance</h2>
+    <div class="row" style="align-items:flex-end">
+      <div><div class="lbl">Measured</div><div class="val"><span id="measFt">0</span><small>ft</small></div></div>
+      <button class="smallbtn" id="measBtn" style="flex:1;padding:16px;font-size:1.1rem">Start measuring</button>
     </div>
+    <button class="smallbtn" id="measUse" hidden>Use as next trip distance</button>
+    <p class="note">Measures how far you drive between taps. It doesn't change your first trip or the run log.</p>
   </section>
 
   <section>
@@ -182,16 +189,18 @@ details[open]{display:flex;flex-direction:column;gap:10px}
     <button class="big" id="armBtn" disabled>Auto start when I pull away</button>
     <button class="big" id="runBtn" disabled>Start shift timer</button>
     <details>
-      <summary>Timer start settings</summary>
+      <summary>Timer settings</summary>
       <div class="tset">
         <label class="field"><span class="lbl">Head start when tapped (sec)</span><input id="headStart" type="number" inputmode="decimal" min="0" max="10" step="0.5"></label>
         <label class="field"><span class="lbl">PTO on before pulling away (sec)</span><input id="ptoLead" type="number" inputmode="decimal" min="0" max="10" step="0.5"></label>
+        <label class="field"><span class="lbl">Time to stop before tapping Stop (sec)</span><input id="stopDelay" type="number" inputmode="decimal" min="0" max="10" step="0.5"></label>
       </div>
-      <p class="note">Start shift timer counts as if it started this many seconds ago. Auto start begins the timer from when GPS sees you start speeding up, minus the PTO time.</p>
+      <p class="note">Start shift timer counts as if it started this many seconds ago. Auto start begins the timer from when GPS sees you start speeding up, minus the PTO time. When you tap Stop shift timer, the run log treats the run as ending this many seconds before your tap.</p>
     </details>
     <div class="runner" id="runner" hidden>
       <div class="lbl" id="runLbl">Drive in</div>
       <div class="now" id="runGear">Gear —</div>
+      <div class="lbl" id="runSpd"></div>
       <div class="lbl" id="runCountLbl">Shift in</div>
       <div class="count" id="runCount">0:00</div>
       <div class="lbl" id="runNext"></div>
@@ -290,12 +299,11 @@ details[open]{display:flex;flex-direction:column;gap:10px}
     const m = Math.floor(r.length/2);
     return {f: r.length % 2 ? r[m] : (r[m-1]+r[m])/2, n: r.length};
   }
-  // shown = the speed you'll recognise; calc = best estimate of true ground speed used for timing.
+  // Manual beats GPS beats Default, and the chosen number is used exactly as-is for timing.
   function gearInfo(g){
-    const sf = corrOn ? speedoFactor() : null, f = sf ? sf.f : 1;
-    if(manual[g] > 0) return {shown: manual[g], src: 'speedo', calc: (corrOn && gpsSp[g] > 0) ? gpsSp[g] : manual[g] * f};
+    if(manual[g] > 0) return {shown: manual[g], src: 'speedo', calc: manual[g]};
     if(gpsSp[g] > 0)  return {shown: gpsSp[g], src: 'gps', calc: gpsSp[g]};
-    if(defaults[g] > 0) return {shown: defaults[g], src: 'default', calc: defaults[g] * f};
+    if(defaults[g] > 0) return {shown: defaults[g], src: 'default', calc: defaults[g]};
     return null;
   }
   function flashSaved(msg){
@@ -309,9 +317,9 @@ details[open]{display:flex;flex-direction:column;gap:10px}
       const r = document.createElement('div');
       r.className = 'gr';
       r.innerHTML = `<b>${g}</b>
-        <div class="cell" data-c="default"><input id="def${g}" type="number" inputmode="decimal" min="0" step="0.1" aria-label="Gear ${g} default mph" placeholder="—"></div>
+        <div class="cell" data-c="default"><input id="def${g}" type="number" inputmode="decimal" min="0" step="0.1" aria-label="Gear ${g} tractor speedometer mph" placeholder="—"></div>
         <div class="cell" data-c="gps"><button class="gpsbtn" id="gps${g}" aria-label="Measure gear ${g} with GPS"></button></div>
-        <div class="cell" data-c="speedo"><input id="man${g}" type="number" inputmode="decimal" min="0" step="0.1" aria-label="Gear ${g} speedometer mph" placeholder="—"></div>`;
+        <div class="cell" data-c="speedo"><input id="man${g}" type="number" inputmode="decimal" min="0" step="0.1" aria-label="Gear ${g} override mph" placeholder="—"></div>`;
       box.appendChild(r);
       rows[g] = r;
       const def = r.querySelector('#def'+g), man = r.querySelector('#man'+g), btn = r.querySelector('#gps'+g);
@@ -335,26 +343,17 @@ details[open]{display:flex;flex-direction:column;gap:10px}
       btn.classList.toggle('has', gpsSp[g] > 0);
       btn.innerHTML = gpsSp[g] > 0 ? `${gpsSp[g].toFixed(1)} <span class="x" role="button" aria-label="Clear">✕</span>` : '◎ GPS';
     }
-    const sf = speedoFactor();
-    $('corr').hidden = !sf;
-    if(sf){
-      const pct = Math.abs(1/sf.f - 1) * 100;
-      $('corrText').textContent = pct < 1
-        ? `Your speedometer matches GPS within 1% (from ${sf.n} gear${sf.n>1?'s':''}).`
-        : `Your speedometer reads about ${pct.toFixed(0)}% ${sf.f < 1 ? 'high' : 'low'} compared with GPS (from ${sf.n} gear${sf.n>1?'s':''}).`;
-      $('corrOn').checked = corrOn;
-    }
     renderPlan();
   }
   let resetArmed = false;
   $('resetDef').addEventListener('click', () => {
-    if(!resetArmed){ resetArmed = true; $('resetDef').textContent = 'Tap again to reset defaults'; setTimeout(()=>{ resetArmed = false; $('resetDef').textContent = 'Reset defaults to built-in speeds'; }, 3000); return; }
-    resetArmed = false; $('resetDef').textContent = 'Reset defaults to built-in speeds';
+    if(!resetArmed){ resetArmed = true; $('resetDef').textContent = 'Tap again to reset the tractor speedometer column'; setTimeout(()=>{ resetArmed = false; $('resetDef').textContent = 'Reset tractor speedometer column to built-in speeds'; }, 3000); return; }
+    resetArmed = false; $('resetDef').textContent = 'Reset tractor speedometer column to built-in speeds';
     defaults = Object.assign({}, BUILTIN); store.set('pm_gears', defaults);
     for(let g=1; g<=15; g++) $('def'+g).value = defaults[g] || '';
     flashSaved('Defaults reset'); refreshGears();
   });
-  $('corrOn').addEventListener('change', () => { corrOn = $('corrOn').checked; store.set('pm_corr', corrOn); refreshGears(); });
+
 
   // Measure ground speed in one gear: average GPS speed over about 6 seconds of steady driving.
   let gpsRead = null;
@@ -399,7 +398,7 @@ details[open]{display:flex;flex-direction:column;gap:10px}
 
   const gearList = () => {
     const out = [];
-    for(let g=1; g<=15; g++){ const i = gearInfo(g); if(i) out.push({g, v: i.calc, shown: i.shown, src: i.src}); }
+    for(let g=1; g<=15; g++){ const i = gearInfo(g); if(i) out.push({g, v: i.calc, shown: i.shown, src: i.src, speedo: defaults[g] > 0 ? defaults[g] : null}); }
     return out.sort((a,b) => a.v - b.v || a.g - b.g);
   };
 
@@ -409,8 +408,8 @@ details[open]{display:flex;flex-direction:column;gap:10px}
     const need = D / (T / 3600);             // mph
     const gears = gearList();
     if(!gears.length) return {need, steps:[], msg:'Enter speeds for the gears you use to get a gear plan.'};
-    const legFor = (gear, secs) => ({g:gear.g, v:gear.v, shown:gear.shown, src:gear.src, secs, ft: gear.v * 5280 * secs / 3600});
-    const exact = gears.find(x => Math.abs(x.v - need) < 0.05);
+    const legFor = (gear, secs) => ({g:gear.g, v:gear.v, shown:gear.shown, src:gear.src, speedo:gear.speedo, secs, ft: gear.v * 5280 * secs / 3600});
+    const exact = gears.find(x => Math.abs(x.v - need) * 5280 / 3600 * T < 8);   // one gear if it lands within 8 ft
     if(exact) return {need, steps:[legFor(exact, T)]};
     const fastest = gears[gears.length-1], slowest = gears[0];
     if(need > fastest.v){
@@ -430,6 +429,10 @@ details[open]{display:flex;flex-direction:column;gap:10px}
     return {need, steps:[legFor(hi, tHi), legFor(lo, tLo)]};
   }
 
+  // Dash number first; the speed actually used for timing in brackets when it differs.
+  const dashMph = x => x.speedo != null ? x.speedo : x.shown;
+  const timedNote = x => (x.speedo != null && x.src !== 'default' && Math.abs(x.shown - x.speedo) > 0.001)
+    ? `(${x.src === 'gps' ? 'GPS' : 'override'} ${(+x.shown).toFixed(1)})` : '';
   function renderPlan(){
     const d = parseFloat($('nextDist').value);
     $('steps').innerHTML = '';
@@ -454,7 +457,7 @@ details[open]{display:flex;flex-direction:column;gap:10px}
       li.className = 'step';
       const share = Math.round(s.ft / total * 100);
       li.innerHTML = `<div class="gno">${s.g}</div>
-        <div class="what"><strong>${i===0 && p.steps.length===2 ? 'First' : p.steps.length===2 ? 'Then' : 'Whole trip'} · gear ${s.g} at ${s.shown} mph${s.src==='gps' ? ' (GPS)' : ''}</strong>
+        <div class="what"><strong>${i===0 && p.steps.length===2 ? 'First' : p.steps.length===2 ? 'Then' : 'Whole trip'} · gear ${s.g} at ${dashMph(s)} mph on speedometer ${timedNote(s)}</strong>
         <span>${fmtFt(s.ft)} ft · about ${share}% of the distance</span></div>
         <div class="dur">${fmtTime(s.secs)}</div>`;
       $('steps').appendChild(li);
@@ -497,10 +500,13 @@ details[open]{display:flex;flex-direction:column;gap:10px}
   }
   // GPS distance for each shift-timer run (reference only; never changes the first-trip baseline).
   let track = null, runLog = store.get('pm_runs') || [];
-  let headStart = store.get('pm_head'); if(headStart === null) headStart = 1.5;
+  let headStart = store.get('pm_head2'); if(headStart === null) headStart = 2;
+  let stopDelay = store.get('pm_stopdelay'); if(stopDelay === null) stopDelay = 2;
+  $('stopDelay').value = stopDelay;
+  $('stopDelay').addEventListener('input', () => { const n = parseFloat($('stopDelay').value); if(n >= 0){ stopDelay = n; store.set('pm_stopdelay', n); } });
   let ptoLead = store.get('pm_pto'); if(ptoLead === null) ptoLead = 1;
   $('headStart').value = headStart; $('ptoLead').value = ptoLead;
-  $('headStart').addEventListener('input', () => { const n = parseFloat($('headStart').value); if(n >= 0){ headStart = n; store.set('pm_head', n); } });
+  $('headStart').addEventListener('input', () => { const n = parseFloat($('headStart').value); if(n >= 0){ headStart = n; store.set('pm_head2', n); } });
   $('ptoLead').addEventListener('input', () => { const n = parseFloat($('ptoLead').value); if(n >= 0){ ptoLead = n; store.set('pm_pto', n); } });
 
   // ---------- auto start ----------
@@ -530,6 +536,7 @@ details[open]{display:flex;flex-direction:column;gap:10px}
     if(!armed) return;
     $('runLbl').textContent = 'Auto start armed';
     $('runGear').textContent = armed.dip ? 'Pull away' : 'Slow down · PTO on';
+    $('runSpd').textContent = '';
     $('runCountLbl').textContent = 'GPS speed';
     $('runCount').textContent = armed.v === null ? '— mph' : armed.v.toFixed(1) + ' mph';
     $('runNext').textContent = armed.dip ? 'Timer starts when you speed up' : 'Waiting for you to slow down';
@@ -568,12 +575,44 @@ details[open]{display:flex;flex-direction:column;gap:10px}
     for(const x of s){ const d = Math.min(t, x.secs); ft += x.v * 5280 * d / 3600; t -= d; if(t <= 0) break; }
     return ft;
   }
+  // Simple distance measuring, separate from everything else.
+  let meas = null, measFt = 0;
+  function measPoint(pt, acc){
+    if(!meas || acc > 40) return;
+    if(!meas.last){ meas.last = pt; return; }
+    const d = haversine(meas.last, pt);
+    if(d < Math.max(3, acc*0.4)) return;
+    meas.m += d; meas.last = pt;
+    $('measFt').textContent = fmtFt(toFt(meas.m));
+  }
+  $('measBtn').addEventListener('click', () => {
+    if(!meas){
+      startGps(); keepAwake();
+      meas = {m: 0, last: (fix && Date.now() - fix.t < 4000 && fix.acc <= 40) ? fix.pt : null};
+      $('measFt').textContent = '0'; $('measUse').hidden = true;
+      $('measBtn').textContent = 'Stop measuring';
+    } else {
+      if(fix && meas.last && Date.now() - fix.t < 4000 && fix.acc <= 40){ const d = haversine(meas.last, fix.pt); if(d > 0.5) meas.m += d; }
+      measFt = Math.round(toFt(meas.m)); meas = null;
+      $('measFt').textContent = measFt.toLocaleString();
+      $('measBtn').textContent = 'Start measuring';
+      $('measUse').hidden = !(measFt > 0);
+      if(!tracking && !run && !armed) releaseWake();
+    }
+  });
+  $('measUse').addEventListener('click', () => {
+    $('nextDist').value = measFt; store.set('pm_next_ft', String(measFt));
+    if(run) stopRun();
+    renderPlan(); $('measUse').hidden = true;
+    $('nextDist').scrollIntoView({behavior: 'smooth', block: 'center'});
+  });
   function trackPoint(pt, acc){
     if(!track || acc > 40) return;
     if(!track.last){ track.last = pt; return; }
     const d = haversine(track.last, pt);
     if(d < Math.max(3, acc*0.4)) return;
     track.m += d; track.leg[Math.min(run ? run.phase : 2, 2)] += d; track.last = pt;
+    track.hist.push({t: Date.now(), m: track.m});
   }
   function startRun(t0){
     if(!plan) return;
@@ -581,7 +620,7 @@ details[open]{display:flex;flex-direction:column;gap:10px}
     try{ audio = audio || new (window.AudioContext || window.webkitAudioContext)(); audio.resume(); }catch(e){}
     startGps();
     run = {steps: plan.steps.map(x => Object.assign({}, x)), t0: t0 || Date.now(), phase: 0};
-    track = {m: 0, leg: [0,0,0], last: (fix && Date.now() - fix.t < 4000 && fix.acc <= 40) ? fix.pt : null, atEnd: null};
+    track = {m: 0, leg: [0,0,0], last: (fix && Date.now() - fix.t < 4000 && fix.acc <= 40) ? fix.pt : null, atEnd: null, hist: [{t: Date.now(), m: 0}]};
     $('runner').hidden = false; $('runner').className = 'runner';
     $('runBtn').textContent = 'Stop shift timer'; $('runBtn').classList.add('stop'); $('runBtn').disabled = false;
     $('armBtn').disabled = true;
@@ -592,12 +631,26 @@ details[open]{display:flex;flex-direction:column;gap:10px}
   function saveRun(){
     if(!run || !track) return;
     if(fix && track.last && Date.now() - fix.t < 4000 && fix.acc <= 40){   // last stretch
-      const d = haversine(track.last, fix.pt); if(d > 0.5){ track.m += d; track.leg[Math.min(run.phase,2)] += d; }
+      const d = haversine(track.last, fix.pt); if(d > 0.5){ track.m += d; track.leg[Math.min(run.phase,2)] += d; track.hist.push({t: Date.now(), m: track.m}); }
     }
-    const el = (Date.now() - run.t0) / 1000, s = run.steps, {endAt, shiftAt} = runTimes(s);
+    // Back-date the stop: you stopped the tractor a couple of seconds before tapping.
+    const stopT = Date.now() - stopDelay * 1000;
+    let mStop = 0;
+    for(let i = 0; i < track.hist.length; i++){
+      const h = track.hist[i];
+      if(h.t <= stopT){ mStop = h.m; continue; }
+      const prev = track.hist[i-1];
+      if(prev) mStop = prev.m + (h.m - prev.m) * (stopT - prev.t) / (h.t - prev.t);
+      break;
+    }
+    const cut = Math.max(0, track.m - mStop);
+    track.m -= cut; track.leg[Math.min(run.phase,2)] = Math.max(0, track.leg[Math.min(run.phase,2)] - cut);
+    const s = run.steps, {endAt, shiftAt} = runTimes(s);
+    const el = (stopT - run.t0) / 1000;
     if(el < 15) return;                           // ignore accidental taps
+    if(el < endAt) track.atEnd = null;
     const legT = [Math.min(el, shiftAt), s.length === 2 ? Math.max(0, Math.min(el, endAt) - shiftAt) : 0];
-    const legs = s.map((x, i) => ({g: x.g, shown: x.shown, plan: +x.v.toFixed(2),
+    const legs = s.map((x, i) => ({g: x.g, shown: x.shown, speedo: x.speedo, plan: +x.v.toFixed(2),
       gps: legT[i] >= 20 ? +((track.leg[i] / 1609.344) / (legT[i] / 3600)).toFixed(2) : null}));
     runLog.unshift({when: Date.now(), planFt: Math.round(s.reduce((a,x)=>a+x.ft,0)), planSecs: Math.round(endAt),
       secs: Math.round(el), ft: Math.round(toFt(track.m)), endFt: track.atEnd, legs});
@@ -620,7 +673,7 @@ details[open]{display:flex;flex-direction:column;gap:10px}
       } else {
         html += `<span>Stopped at ${fmtTime(r.secs)}, <span class="early">${fmtTime(r.planSecs - r.secs)} before timer end</span>, after ${r.ft.toLocaleString()} ft</span>`;
       }
-      r.legs.forEach(l => { if(l.gps != null) html += `<span class="k">Gear ${l.g}: dash ${l.shown} mph · GPS ${l.gps.toFixed(1)} mph</span>`; });
+      r.legs.forEach(l => { if(l.gps != null) html += `<span class="k">Gear ${l.g}: speedometer ${l.speedo != null ? l.speedo : l.shown} · planned ${l.shown} · GPS ${l.gps.toFixed(1)} mph</span>`; });
       li.innerHTML = html; ol.appendChild(li);
     });
   }
@@ -650,19 +703,22 @@ details[open]{display:flex;flex-direction:column;gap:10px}
     }
     if(phase === 0){
       $('runLbl').textContent = 'Drive in';
-      $('runGear').textContent = `Gear ${s[0].g} · ${s[0].shown} mph`;
+      $('runGear').textContent = `Gear ${s[0].g} · ${dashMph(s[0])} mph`;
+      $('runSpd').textContent = ('Tractor speedometer ' + timedNote(s[0])).trim();
       $('runCountLbl').textContent = s.length === 2 ? 'Shift in' : 'Finish in';
       $('runCount').textContent = fmtTime((s.length === 2 ? shiftAt : endAt) - el);
-      $('runNext').textContent = s.length === 2 ? `Then gear ${s[1].g} for ${fmtTime(s[1].secs)}` : '';
+      $('runNext').textContent = s.length === 2 ? `Then gear ${s[1].g} at ${dashMph(s[1])} mph for ${fmtTime(s[1].secs)}` : '';
     } else if(phase === 1){
       $('runLbl').textContent = s[1].v < s[0].v ? 'Downshift to' : 'Upshift to';
-      $('runGear').textContent = `Gear ${s[1].g} · ${s[1].shown} mph`;
+      $('runGear').textContent = `Gear ${s[1].g} · ${dashMph(s[1])} mph`;
+      $('runSpd').textContent = ('Tractor speedometer ' + timedNote(s[1])).trim();
       $('runCountLbl').textContent = 'Finish in';
       $('runCount').textContent = fmtTime(endAt - el);
       $('runNext').textContent = '';
     } else {
       $('runLbl').textContent = 'Done';
       $('runGear').textContent = 'End of run';
+      $('runSpd').textContent = '';
       $('runCountLbl').textContent = 'Total time';
       $('runCount').textContent = fmtTime(endAt);
       $('runNext').textContent = 'Tap Stop shift timer to save this run';
@@ -700,6 +756,7 @@ details[open]{display:flex;flex-direction:column;gap:10px}
     setGps(accuracy <= 15 ? 'ok' : accuracy <= 40 ? 'weak' : 'bad',
       tracking ? `GPS accuracy ±${ft} ft` : accuracy <= 15 ? `GPS ready ±${ft} ft` : `GPS weak ±${ft} ft. Wait for a green dot before starting.`);
     trackPoint(pt, accuracy);
+    measPoint(pt, accuracy);
     armPoint(p);
     if(!tracking || accuracy > 40) return;
     if(!last){ lockWait = (Date.now() - startTime) / 1000; addPoint(pt); return; }
